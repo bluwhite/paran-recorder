@@ -1,16 +1,5 @@
-import * as ort from 'onnxruntime-web';
-
-const ORT_VERSION = '1.30.0';
-const MODEL_URL = 'https://huggingface.co/onnx-community/BackgroundMattingV2-hd/resolve/main/onnx/model.onnx';
 const MAX_INPUT_WIDTH = 512;
 const MIN_INFERENCE_INTERVAL_MS = 120;
-
-ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
-ort.env.wasm.numThreads = 1;
-// Proxy workers can fail under CSP-restricted deployments such as this web app.
-// Keep the fully compatible WASM backend on the main thread, while reducing
-// input size and inference cadence to lower UI pressure.
-ort.env.wasm.proxy = false;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -24,19 +13,6 @@ function errorText(error) {
   return String(error ?? '알 수 없는 오류');
 }
 
-function clamp01(value) {
-  return Math.max(0, Math.min(1, value));
-}
-
-// renderer.js applies smoothstep after mapping [0.12, 0.88] to [0, 1].
-// BackgroundMattingV2 already outputs a continuous alpha matte, so encode the
-// inverse here to preserve its alpha while keeping the shared renderer unchanged.
-function encodeAlphaForSharedRenderer(alpha) {
-  const y = clamp01(alpha);
-  const x = 0.5 - Math.sin(Math.asin(1 - (2 * y)) / 3);
-  return 0.12 + (0.76 * x);
-}
-
 function targetSize(imageSource) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
   const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || 720;
@@ -47,41 +23,86 @@ function targetSize(imageSource) {
   };
 }
 
-function rgbaToRgbTensorData(rgba, width, height, target) {
-  const plane = width * height;
-  for (let pixel = 0, offset = 0; pixel < plane; pixel += 1, offset += 4) {
-    target[pixel] = rgba[offset] / 255;
-    target[plane + pixel] = rgba[offset + 1] / 255;
-    target[(plane * 2) + pixel] = rgba[offset + 2] / 255;
+async function makeBitmap(imageSource, width, height) {
+  const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || width;
+  const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || height;
+
+  try {
+    return await createImageBitmap(
+      imageSource,
+      0,
+      0,
+      sourceWidth,
+      sourceHeight,
+      { resizeWidth: width, resizeHeight: height, resizeQuality: 'medium' },
+    );
+  } catch {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: false });
+    context.drawImage(imageSource, 0, 0, width, height);
+    return createImageBitmap(canvas);
   }
 }
 
 export class BackgroundMattingV2Engine {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.session = null;
+    this.worker = null;
     this.initializing = null;
+    this.ready = false;
     this.delegate = '';
     this.latestMask = null;
-    this.previousAlpha = null;
     this.busy = false;
     this.pendingError = null;
-    this.lastDiagnosticsAt = 0;
-    this.lastRunStartedAt = 0;
-
+    this.referenceReady = false;
     this.width = 0;
     this.height = 0;
-    this.sourceCanvas = document.createElement('canvas');
-    this.sourceContext = this.sourceCanvas.getContext('2d', { willReadFrequently: true });
-    this.referenceCanvas = document.createElement('canvas');
-    this.referenceContext = this.referenceCanvas.getContext('2d', { willReadFrequently: true });
-    this.sourceBuffer = null;
-    this.referenceBuffer = null;
-    this.referenceReady = false;
+    this.lastRunStartedAt = 0;
+    this.lastDiagnosticsAt = 0;
+    this.requestId = 0;
+    this.pending = new Map();
+  }
+
+  #ensureWorker() {
+    if (this.worker) return this.worker;
+    const worker = new Worker(new URL('./background-matting-worker.js', import.meta.url), { type: 'module' });
+    worker.addEventListener('message', (event) => {
+      const payload = event.data || {};
+      const pending = this.pending.get(payload.id);
+      if (!pending) return;
+      this.pending.delete(payload.id);
+      if (payload.ok === false) pending.reject(new Error(payload.error || 'BackgroundMattingV2 worker 오류'));
+      else pending.resolve(payload);
+    });
+    worker.addEventListener('error', (event) => {
+      const error = new Error(event.message || 'BackgroundMattingV2 worker를 시작하지 못했습니다.');
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+      this.pendingError = error;
+      this.onStatus('AI 오류');
+    });
+    this.worker = worker;
+    return worker;
+  }
+
+  #request(type, payload = {}, transfer = []) {
+    const worker = this.#ensureWorker();
+    const id = ++this.requestId;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try {
+        worker.postMessage({ id, type, ...payload }, transfer);
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
+    });
   }
 
   async ensureReady() {
-    if (this.session) return this.session;
+    if (this.ready) return true;
     if (this.initializing) return this.initializing;
 
     this.initializing = this.#initialize()
@@ -98,20 +119,16 @@ export class BackgroundMattingV2Engine {
   }
 
   async #initialize() {
-    this.onStatus('배경 기준 AI WASM 모델 불러오는 중');
-    this.session = await ort.InferenceSession.create(MODEL_URL, {
-      graphOptimizationLevel: 'all',
-      executionMode: 'sequential',
-      executionProviders: ['wasm'],
-    });
-    this.delegate = 'WASM · 경량';
-
+    this.onStatus('배경 기준 AI Worker 모델 불러오는 중');
+    await this.#request('init');
+    this.ready = true;
+    this.delegate = 'WASM Worker';
     this.#updateStatus();
-    return this.session;
+    return true;
   }
 
   #updateStatus() {
-    if (!this.session) return;
+    if (!this.ready) return;
     if (!this.referenceReady) {
       this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · 배경 촬영 필요`);
     } else {
@@ -119,32 +136,21 @@ export class BackgroundMattingV2Engine {
     }
   }
 
-  #prepareSize(width, height) {
-    this.width = width;
-    this.height = height;
-    this.sourceCanvas.width = width;
-    this.sourceCanvas.height = height;
-    this.referenceCanvas.width = width;
-    this.referenceCanvas.height = height;
-    this.sourceBuffer = new Float32Array(3 * width * height);
-    this.referenceBuffer = new Float32Array(3 * width * height);
-    this.latestMask = null;
-    this.previousAlpha = null;
-    this.lastRunStartedAt = 0;
-  }
-
-  captureBackground(imageSource) {
+  async captureBackground(imageSource) {
     if (!imageSource || (imageSource.readyState !== undefined && imageSource.readyState < 2)) {
       throw new Error('카메라 화면이 준비되지 않았습니다.');
     }
 
+    await this.ensureReady();
     const { width, height } = targetSize(imageSource);
-    this.#prepareSize(width, height);
-    this.referenceContext.clearRect(0, 0, width, height);
-    this.referenceContext.drawImage(imageSource, 0, 0, width, height);
-    const pixels = this.referenceContext.getImageData(0, 0, width, height).data;
-    rgbaToRgbTensorData(pixels, width, height, this.referenceBuffer);
+    const bitmap = await makeBitmap(imageSource, width, height);
+    await this.#request('capture', { bitmap, width, height }, [bitmap]);
+
+    this.width = width;
+    this.height = height;
     this.referenceReady = true;
+    this.latestMask = null;
+    this.lastRunStartedAt = 0;
     this.#updateStatus();
     return { width, height };
   }
@@ -152,8 +158,10 @@ export class BackgroundMattingV2Engine {
   clearBackground() {
     this.referenceReady = false;
     this.latestMask = null;
-    this.previousAlpha = null;
     this.lastRunStartedAt = 0;
+    if (this.worker && this.ready) {
+      this.#request('clear').catch(() => {});
+    }
     this.#updateStatus();
   }
 
@@ -161,73 +169,36 @@ export class BackgroundMattingV2Engine {
     return this.referenceReady;
   }
 
-  #preprocessSource(imageSource) {
-    const width = this.width;
-    const height = this.height;
-    this.sourceContext.clearRect(0, 0, width, height);
-    this.sourceContext.drawImage(imageSource, 0, 0, width, height);
-    const pixels = this.sourceContext.getImageData(0, 0, width, height).data;
-    rgbaToRgbTensorData(pixels, width, height, this.sourceBuffer);
-  }
-
-  #reportDiagnostics(minAlpha, maxAlpha, meanAlpha) {
+  #reportDiagnostics(payload) {
     const now = performance.now();
     if (now - this.lastDiagnosticsAt < 1000) return;
     this.lastDiagnosticsAt = now;
 
-    const min = minAlpha.toFixed(2);
-    const max = maxAlpha.toFixed(2);
-    const mean = meanAlpha.toFixed(2);
-    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · α ${min}~${max} 평균 ${mean}`);
+    const min = Number(payload.minAlpha || 0).toFixed(2);
+    const max = Number(payload.maxAlpha || 0).toFixed(2);
+    const mean = Number(payload.meanAlpha || 0).toFixed(2);
+    const ms = Math.round(Number(payload.inferenceMs || 0));
+    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · α ${min}~${max} · ${ms}ms`);
 
     const status = document.getElementById('backgroundReferenceStatus');
     if (status) {
-      status.textContent = `빈 배경 저장 완료 · ${this.width}×${this.height} · α ${min}~${max} 평균 ${mean}`;
+      status.textContent = `빈 배경 저장 완료 · ${this.width}×${this.height} · α ${min}~${max} 평균 ${mean} · ${ms}ms`;
     }
   }
 
   async #run(imageSource) {
-    if (!this.referenceReady) return;
-    this.#preprocessSource(imageSource);
-
-    const dims = [1, 3, this.height, this.width];
-    const feeds = {
-      src: new ort.Tensor('float32', this.sourceBuffer, dims),
-      bgr: new ort.Tensor('float32', this.referenceBuffer, dims),
+    const bitmap = await makeBitmap(imageSource, this.width, this.height);
+    const payload = await this.#request('run', { bitmap }, [bitmap]);
+    this.latestMask = {
+      width: payload.width,
+      height: payload.height,
+      data: new Float32Array(payload.buffer),
     };
-
-    const results = await this.session.run(feeds, ['pha']);
-    const output = results.pha || Object.values(results)[0];
-    if (!output?.data) throw new Error('BackgroundMattingV2 알파 마스크를 받지 못했습니다.');
-
-    const outputDims = output.dims || [];
-    const height = Number(outputDims[outputDims.length - 2]) || this.height;
-    const width = Number(outputDims[outputDims.length - 1]) || this.width;
-    const size = width * height;
-    const data = new Float32Array(size);
-    const rawAlpha = new Float32Array(size);
-    const previous = this.previousAlpha?.length === size ? this.previousAlpha : null;
-    let minAlpha = 1;
-    let maxAlpha = 0;
-    let sumAlpha = 0;
-
-    for (let i = 0; i < size; i += 1) {
-      const current = clamp01(Number(output.data[i]));
-      const alpha = previous ? (current * 0.98) + (previous[i] * 0.02) : current;
-      rawAlpha[i] = alpha;
-      data[i] = encodeAlphaForSharedRenderer(alpha);
-      minAlpha = Math.min(minAlpha, alpha);
-      maxAlpha = Math.max(maxAlpha, alpha);
-      sumAlpha += alpha;
-    }
-
-    this.previousAlpha = rawAlpha;
-    this.latestMask = { width, height, data };
-    this.#reportDiagnostics(minAlpha, maxAlpha, sumAlpha / Math.max(1, size));
+    this.#reportDiagnostics(payload);
   }
 
   segment(imageSource) {
-    if (!this.session || !this.referenceReady) return this.latestMask;
+    if (!this.ready || !this.referenceReady) return this.latestMask;
 
     if (this.pendingError) {
       const error = this.pendingError;
@@ -253,22 +224,21 @@ export class BackgroundMattingV2Engine {
   }
 
   close() {
-    const session = this.session;
-    this.session = null;
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error('BackgroundMattingV2 worker가 종료되었습니다.'));
+    }
+    this.pending.clear();
+    try { this.worker?.terminate(); } catch { /* best effort */ }
+    this.worker = null;
     this.initializing = null;
+    this.ready = false;
     this.latestMask = null;
-    this.previousAlpha = null;
     this.pendingError = null;
     this.busy = false;
     this.referenceReady = false;
-    this.sourceBuffer = null;
-    this.referenceBuffer = null;
     this.width = 0;
     this.height = 0;
     this.lastRunStartedAt = 0;
-    if (session?.release) {
-      Promise.resolve(session.release()).catch(() => {});
-    }
     this.onStatus('AI 대기');
   }
 }
