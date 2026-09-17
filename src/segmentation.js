@@ -1,7 +1,7 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
-const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
 
 export class PersonSegmenter {
   constructor(onStatus = () => {}) {
@@ -27,44 +27,45 @@ export class PersonSegmenter {
     this.onStatus('AI 모델 불러오는 중');
     const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
 
-    const makeOptions = (delegate) => ({
+    // CPU 우선: 현재 웹 개발판에서는 브라우저별 WebGL/GPU 마스크 차이를 피하고
+    // 일반 배경에서 안정적으로 사람 마스크를 얻는 것을 우선한다.
+    const options = {
       baseOptions: {
         modelAssetPath: MODEL_URL,
-        ...(delegate ? { delegate } : {}),
+        delegate: 'CPU',
       },
       runningMode: 'VIDEO',
       outputCategoryMask: false,
       outputConfidenceMasks: true,
-    });
+    };
 
-    try {
-      this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('GPU'));
-      this.delegate = 'GPU';
-    } catch (gpuError) {
-      console.warn('MediaPipe GPU delegate unavailable, falling back to CPU.', gpuError);
-      this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('CPU'));
-      this.delegate = 'CPU';
-    }
-
-    this.onStatus(`AI 준비 · ${this.delegate}`);
+    this.segmenter = await ImageSegmenter.createFromOptions(vision, options);
+    this.delegate = 'CPU';
+    this.onStatus('AI 준비 · 사람 분할');
     return this.segmenter;
   }
 
   segment(imageSource, timestampMs) {
     if (!this.segmenter) return null;
 
-    const result = this.segmenter.segmentForVideo(imageSource, timestampMs);
-    try {
+    // MediaPipe 웹 문서의 콜백 경로를 사용한다. 콜백은 segmentForVideo가
+    // 반환되기 전에 동기적으로 호출되며, 그 안에서 마스크를 즉시 복사한다.
+    // 이렇게 하면 브라우저/GPU별 결과 수명 문제를 피할 수 있다.
+    let copiedMask = null;
+
+    this.segmenter.segmentForVideo(imageSource, timestampMs, (result) => {
       const mask = result.confidenceMasks?.[0];
-      if (!mask) return null;
-      return {
+      if (!mask) return;
+
+      const source = mask.getAsFloat32Array();
+      copiedMask = {
         width: mask.width,
         height: mask.height,
-        data: new Float32Array(mask.getAsFloat32Array()),
+        data: new Float32Array(source),
       };
-    } finally {
-      result.close();
-    }
+    });
+
+    return copiedMask;
   }
 
   close() {
