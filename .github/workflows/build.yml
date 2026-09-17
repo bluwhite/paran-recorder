@@ -1,9 +1,7 @@
-name: Build Paran Recorder
+name: Build Tauri Installers
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   build:
@@ -12,9 +10,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            target: win
+            bundle: nsis
+            artifact: windows
           - os: macos-latest
-            target: mac
+            bundle: dmg
+            artifact: macos
 
     runs-on: ${{ matrix.os }}
 
@@ -26,23 +26,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: package.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: npm install
 
-      - name: Build
-        run: npx electron-builder --${{ matrix.target }} --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Build Tauri app
+        run: npm run tauri:build -- --bundles ${{ matrix.bundle }}
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: paran-recorder-${{ matrix.target }}
+          name: paran-recorder-${{ matrix.artifact }}
           path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.zip
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
