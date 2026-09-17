@@ -5,6 +5,9 @@ const REFERENCE_DB_VERSION = 1;
 const REFERENCE_STORE = 'references';
 const REFERENCE_ID = 'default';
 const LEGACY_STORAGE_KEY = 'paran-recorder-background-reference-v1';
+const SAVED_REFERENCE_DIFF_LIMIT = 0.12;
+const SAVED_REFERENCE_ALPHA_LIMIT = 0.85;
+const SAVED_REFERENCE_BAD_FRAME_LIMIT = 3;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -137,6 +140,7 @@ export class BackgroundMattingV2Engine {
     this.height = 0;
     this.lastRunFinishedAt = 0;
     this.lastDiagnosticsAt = 0;
+    this.savedReferenceBadFrames = 0;
     this.requestId = 0;
     this.pending = new Map();
   }
@@ -219,6 +223,7 @@ export class BackgroundMattingV2Engine {
       this.referenceSource = 'saved';
       this.latestMask = null;
       this.lastRunFinishedAt = 0;
+      this.savedReferenceBadFrames = 0;
       return true;
     } catch (error) {
       console.warn('Saved background reference could not be restored.', error);
@@ -252,14 +257,12 @@ export class BackgroundMattingV2Engine {
     await this.ensureReady();
     const { width, height } = targetSize(imageSource);
 
-    // Keep the model reference on the exact same bitmap/resize path as live frames.
     const modelBitmap = await makeBitmap(imageSource, width, height);
     const captureResult = await this.#request('capture', { bitmap: modelBitmap, width, height }, [modelBitmap]);
     if (!captureResult.referenceBuffer) {
       throw new Error('기준 배경 데이터를 Worker에서 받지 못했습니다.');
     }
 
-    // Store a human-viewable lossless image separately from the exact tensor used by the model.
     const snapshot = snapshotCanvas(imageSource, width, height);
     const imageBlob = await canvasToBlob(snapshot, 'image/png');
     const persisted = await saveStoredReference(captureResult.referenceBuffer, width, height, imageBlob);
@@ -270,6 +273,7 @@ export class BackgroundMattingV2Engine {
     this.referenceSource = persisted ? 'captured' : 'session';
     this.latestMask = null;
     this.lastRunFinishedAt = 0;
+    this.savedReferenceBadFrames = 0;
     this.#updateStatus();
     return { width, height, persisted };
   }
@@ -279,6 +283,7 @@ export class BackgroundMattingV2Engine {
     this.referenceSource = '';
     this.latestMask = null;
     this.lastRunFinishedAt = 0;
+    this.savedReferenceBadFrames = 0;
     if (this.worker && this.ready) {
       this.#request('clear').catch(() => {});
     }
@@ -289,29 +294,56 @@ export class BackgroundMattingV2Engine {
     return this.referenceReady;
   }
 
+  #invalidateSavedReference(diff, mean) {
+    this.referenceReady = false;
+    this.referenceSource = 'mismatch';
+    this.latestMask = null;
+    this.savedReferenceBadFrames = 0;
+    this.#request('clear').catch(() => {});
+    this.onStatus(`AI 준비 · 저장 배경 불일치 · 재촬영 필요`);
+    const status = document.getElementById('backgroundReferenceStatus');
+    if (status) {
+      status.textContent = `저장 배경 불일치 · 다시 촬영 필요 · 차이 ${(diff * 100).toFixed(1)}% · α 평균 ${mean.toFixed(2)}`;
+    }
+  }
+
   #reportDiagnostics(payload) {
+    const diff = Number(payload.referenceDiff || 0);
+    const mean = Number(payload.meanAlpha || 0);
+
+    if (this.referenceSource === 'saved') {
+      const clearlyBad = diff > SAVED_REFERENCE_DIFF_LIMIT && mean > SAVED_REFERENCE_ALPHA_LIMIT;
+      this.savedReferenceBadFrames = clearlyBad ? this.savedReferenceBadFrames + 1 : 0;
+      if (this.savedReferenceBadFrames >= SAVED_REFERENCE_BAD_FRAME_LIMIT) {
+        this.#invalidateSavedReference(diff, mean);
+        return;
+      }
+    }
+
     const now = performance.now();
     if (now - this.lastDiagnosticsAt < 1000) return;
     this.lastDiagnosticsAt = now;
 
     const min = Number(payload.minAlpha || 0).toFixed(2);
     const max = Number(payload.maxAlpha || 0).toFixed(2);
-    const mean = Number(payload.meanAlpha || 0).toFixed(2);
+    const meanText = mean.toFixed(2);
+    const diffText = (diff * 100).toFixed(1);
     const ms = Math.round(Number(payload.inferenceMs || 0));
-    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · α ${min}~${max} · ${ms}ms`);
+    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · α ${min}~${max} · 차이 ${diffText}% · ${ms}ms`);
 
     const status = document.getElementById('backgroundReferenceStatus');
     if (status) {
       const reuse = this.referenceSource === 'saved'
         ? '저장 배경 재사용'
         : (this.referenceSource === 'session' ? '현재 세션만 사용' : '다음 촬영까지 재사용');
-      status.textContent = `빈 배경 ${this.width}×${this.height} · ${reuse} · α ${min}~${max} 평균 ${mean} · ${ms}ms`;
+      status.textContent = `빈 배경 ${this.width}×${this.height} · ${reuse} · 차이 ${diffText}% · α 평균 ${meanText} · ${ms}ms`;
     }
   }
 
   async #run(imageSource) {
     const bitmap = await makeBitmap(imageSource, this.width, this.height);
     const payload = await this.#request('run', { bitmap }, [bitmap]);
+    if (!this.referenceReady) return;
     this.latestMask = {
       width: payload.width,
       height: payload.height,
@@ -363,6 +395,7 @@ export class BackgroundMattingV2Engine {
     this.width = 0;
     this.height = 0;
     this.lastRunFinishedAt = 0;
+    this.savedReferenceBadFrames = 0;
     this.onStatus('AI 대기');
   }
 }
