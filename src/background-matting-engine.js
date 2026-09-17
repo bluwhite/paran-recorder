@@ -1,7 +1,7 @@
 import * as ort from 'onnxruntime-web/webgpu';
 
 const ORT_VERSION = '1.30.0';
-const MODEL_URL = 'https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/onnx_mobilenetv2_hd.onnx';
+const MODEL_URL = 'https://huggingface.co/onnx-community/BackgroundMattingV2-hd/resolve/main/onnx/model.onnx';
 const MAX_INPUT_WIDTH = 640;
 
 ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
