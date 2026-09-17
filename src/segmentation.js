@@ -16,6 +16,10 @@ function errorText(error) {
   return String(error ?? '알 수 없는 오류');
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function dilateMask(source, width, height, radius) {
   const result = new Uint8Array(source.length);
   const points = [];
@@ -299,6 +303,7 @@ export class PersonSegmenter {
     const button = document.getElementById('backgroundReferenceButton');
     const status = document.getElementById('backgroundReferenceStatus');
     if (!button) return;
+    const defaultButtonText = button.textContent;
 
     button.addEventListener('click', async () => {
       try {
@@ -312,11 +317,24 @@ export class PersonSegmenter {
         }
 
         button.disabled = true;
-        if (status) status.textContent = '모델 준비 중...';
         const engine = this.#getEngine();
+        if (status) status.textContent = '모델 준비 중...';
         await engine.ensureReady();
-        const size = engine.captureBackground(cameraVideo);
-        if (status) status.textContent = `빈 배경 저장 완료 · ${size.width}×${size.height}`;
+
+        for (let seconds = 3; seconds >= 1; seconds -= 1) {
+          button.textContent = `촬영 ${seconds}`;
+          if (status) status.textContent = `${seconds}초 후 빈 배경 촬영 · 화면에서 잠시 비켜 주세요`;
+          await sleep(1000);
+        }
+
+        if (!cameraVideo || cameraVideo.readyState < 2) {
+          throw new Error('촬영 전에 카메라 화면이 종료되었습니다.');
+        }
+
+        button.textContent = '촬영 중...';
+        if (status) status.textContent = '빈 배경 촬영 및 저장 중...';
+        const size = await engine.captureBackground(cameraVideo);
+        if (status) status.textContent = `빈 배경 저장 완료 · ${size.width}×${size.height} · 다음 촬영까지 재사용`;
         this.onStatus(`AI 준비 · 배경 기준 ${engine.delegate || ''} · 배경 저장 완료`);
       } catch (error) {
         console.error('Background reference capture failed:', error);
@@ -324,6 +342,7 @@ export class PersonSegmenter {
         this.onStatus('AI 오류');
       } finally {
         button.disabled = false;
+        button.textContent = defaultButtonText;
       }
     });
   }
