@@ -1,0 +1,38 @@
+{
+  "name": "paran-recorder",
+  "version": "0.1.0",
+  "description": "Lecture screen recorder with camera overlay and microphone support",
+  "main": "src/main.js",
+  "author": "bluwhite",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "com.paran.recorder",
+    "productName": "Paran Recorder",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis"]
+    },
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.education",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Paran Recorder uses the camera to place the lecturer on the recording.",
+        "NSMicrophoneUsageDescription": "Paran Recorder uses the microphone to record lecture audio."
+      }
+    }
+  }
+}
