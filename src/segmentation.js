@@ -15,10 +15,6 @@ function errorText(error) {
   return String(error ?? '알 수 없는 오류');
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 function dilateMask(source, width, height, radius) {
   const result = new Uint8Array(source.length);
   const points = [];
@@ -39,23 +35,6 @@ function dilateMask(source, width, height, radius) {
           result[yy * width + xx] = 1;
         }
       }
-    }
-  }
-  return result;
-}
-
-function shiftMask(source, width, height, dx, dy) {
-  const result = new Uint8Array(source.length);
-  if (!dx && !dy) return result;
-
-  for (let y = 0; y < height; y += 1) {
-    const yy = y + dy;
-    if (yy < 0 || yy >= height) continue;
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      if (!source[index]) continue;
-      const xx = x + dx;
-      if (xx >= 0 && xx < width) result[yy * width + xx] = 1;
     }
   }
   return result;
@@ -116,22 +95,6 @@ function largestConnectedRegion(binary, width, height) {
   return kept;
 }
 
-function maskCentroid(binary, width) {
-  let count = 0;
-  let sumX = 0;
-  let sumY = 0;
-  for (let i = 0; i < binary.length; i += 1) {
-    if (!binary[i]) continue;
-    const y = Math.floor(i / width);
-    const x = i - y * width;
-    count += 1;
-    sumX += x;
-    sumY += y;
-  }
-  if (!count) return null;
-  return { x: sumX / count, y: sumY / count, count };
-}
-
 function enclosedHeadMask(head, width, height) {
   const rowMin = new Int32Array(height).fill(width);
   const rowMax = new Int32Array(height).fill(-1);
@@ -160,30 +123,38 @@ function enclosedHeadMask(head, width, height) {
   return enclosed;
 }
 
-function blurAlpha(source, width, height) {
-  const blurred = new Float32Array(source.length);
+function softenMask(binary, width, height, previous) {
+  const alpha = new Float32Array(binary.length);
   for (let y = 0; y < height; y += 1) {
     const y0 = Math.max(0, y - 1);
     const y1 = Math.min(height - 1, y + 1);
     for (let x = 0; x < width; x += 1) {
       const x0 = Math.max(0, x - 1);
       const x1 = Math.min(width - 1, x + 1);
-      let sum = 0;
       let count = 0;
+      let total = 0;
       for (let yy = y0; yy <= y1; yy += 1) {
         const row = yy * width;
         for (let xx = x0; xx <= x1; xx += 1) {
-          sum += source[row + xx];
-          count += 1;
+          total += 1;
+          count += binary[row + xx];
         }
       }
-      blurred[y * width + x] = sum / count;
+      const index = y * width + x;
+      const neighborhood = count / total;
+      const current = binary[index]
+        ? Math.max(0.72, neighborhood)
+        : (neighborhood >= 0.45 ? neighborhood * 0.48 : 0);
+      // Very light smoothing only; enough to reduce flicker without visible motion lag.
+      alpha[index] = previous?.length === binary.length
+        ? (current * 0.92) + (previous[index] * 0.08)
+        : current;
     }
   }
-  return blurred;
+  return alpha;
 }
 
-function buildForegroundMask(categories, width, height, previousState) {
+function buildForegroundMask(categories, width, height, previous) {
   const size = categories.length;
   const core = new Uint8Array(size);
   const head = new Uint8Array(size);
@@ -197,7 +168,7 @@ function buildForegroundMask(categories, width, height, previousState) {
 
   const mainPerson = largestConnectedRegion(core, width, height);
   const bodyHalo = dilateMask(mainPerson, width, height, 2);
-  const headHalo = dilateMask(head, width, height, 8);
+  const headHalo = dilateMask(head, width, height, 7);
   const headInterior = enclosedHeadMask(head, width, height);
   const foreground = new Uint8Array(size);
 
@@ -209,57 +180,18 @@ function buildForegroundMask(categories, width, height, previousState) {
     }
 
     // class 5 = others. Glasses, earphones and accessories often land here.
-    // Keep it only near the detected person, with a little more room around the head.
+    // Keep it only when it hugs the detected person, especially the head.
     if (category === 5 && (headHalo[i] || bodyHalo[i])) {
       foreground[i] = 1;
       continue;
     }
 
-    // Glass lenses can be classified as background. Keep small enclosed gaps in the head.
+    // Glass lenses can occasionally be classified as background. Fill only pixels
+    // enclosed by detected hair/face in both horizontal and vertical directions.
     if (headInterior[i]) foreground[i] = 1;
   }
 
-  const centroid = maskCentroid(foreground, width);
-  const edgeGuard = dilateMask(foreground, width, height, 1);
-  const baseAlpha = new Float32Array(size);
-
-  // Predict a small amount of forward motion. This intentionally favors hiding a tiny
-  // extra rim over flashing the real background during fast movement.
-  let predicted = null;
-  let moving = false;
-  if (centroid && previousState?.centroid) {
-    const dxRaw = centroid.x - previousState.centroid.x;
-    const dyRaw = centroid.y - previousState.centroid.y;
-    const distance = Math.hypot(dxRaw, dyRaw);
-    if (distance >= 0.8) {
-      moving = true;
-      const dx = Math.round(clamp(dxRaw * 0.7, -7, 7));
-      const dy = Math.round(clamp(dyRaw * 0.7, -7, 7));
-      predicted = shiftMask(foreground, width, height, dx, dy);
-    }
-  }
-
-  for (let i = 0; i < size; i += 1) {
-    if (foreground[i]) baseAlpha[i] = 1;
-    else if (predicted?.[i]) baseAlpha[i] = 0.72;
-    else if (edgeGuard[i]) baseAlpha[i] = 0.46;
-  }
-
-  const blurred = blurAlpha(baseAlpha, width, height);
-  const alpha = new Float32Array(size);
-  for (let i = 0; i < size; i += 1) {
-    // Keep the interior solid while feathering only the outside edge.
-    const spatial = foreground[i]
-      ? Math.max(0.94, blurred[i])
-      : Math.max(baseAlpha[i], blurred[i] * 0.72);
-
-    // Almost no temporal smoothing while moving, so the matte does not visibly trail.
-    const previous = previousState?.alpha?.length === size ? previousState.alpha[i] : spatial;
-    const previousWeight = moving ? 0.01 : 0.04;
-    alpha[i] = clamp((spatial * (1 - previousWeight)) + (previous * previousWeight), 0, 1);
-  }
-
-  return { alpha, centroid };
+  return softenMask(foreground, width, height, previous);
 }
 
 export class PersonSegmenter {
@@ -268,7 +200,7 @@ export class PersonSegmenter {
     this.segmenter = null;
     this.initializing = null;
     this.latestMask = null;
-    this.previousState = null;
+    this.previousAlpha = null;
     this.delegate = '';
   }
 
@@ -308,7 +240,7 @@ export class PersonSegmenter {
       this.delegate = 'CPU';
     }
 
-    this.onStatus(`AI 준비 · 움직임 보정 ${this.delegate}`);
+    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate}`);
     return this.segmenter;
   }
 
@@ -323,9 +255,9 @@ export class PersonSegmenter {
         const categories = mask.getAsUint8Array();
         const width = mask.width;
         const height = mask.height;
-        const processed = buildForegroundMask(categories, width, height, this.previousState);
-        this.previousState = { alpha: processed.alpha, centroid: processed.centroid };
-        copiedMask = { width, height, data: processed.alpha };
+        const alpha = buildForegroundMask(categories, width, height, this.previousAlpha);
+        this.previousAlpha = alpha;
+        copiedMask = { width, height, data: alpha };
         this.latestMask = copiedMask;
       } finally {
         result.close();
@@ -339,7 +271,7 @@ export class PersonSegmenter {
     try { this.segmenter?.close(); } catch { /* best effort */ }
     this.segmenter = null;
     this.latestMask = null;
-    this.previousState = null;
+    this.previousAlpha = null;
     this.onStatus('AI 대기');
   }
 }
