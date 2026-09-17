@@ -87,6 +87,23 @@ input[type="range"] { accent-color: #3b82f6; }
 .info-box strong { color: #bfdbfe; }
 .field-note { margin-bottom: 14px; }
 .runtime-box { margin-top: 14px; }
+.ai-engine-note { margin-bottom: 10px; }
+
+.advanced-settings { margin: 0 0 14px; border: 1px solid #26344c; border-radius: 11px; background: rgba(11, 18, 32, .72); overflow: hidden; }
+.advanced-settings summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; cursor: pointer; list-style: none; color: #dbeafe; font-size: 12px; font-weight: 800; user-select: none; }
+.advanced-settings summary::-webkit-details-marker { display: none; }
+.advanced-settings summary::after { content: "▾"; color: #64748b; margin-left: auto; transition: transform .18s ease; }
+.advanced-settings[open] summary::after { transform: rotate(180deg); }
+.advanced-settings summary small { color: #60a5fa; background: rgba(37, 99, 235, .16); border: 1px solid rgba(96, 165, 250, .2); border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 800; }
+.advanced-body { padding: 0 12px 12px; border-top: 1px solid rgba(148, 163, 184, .10); }
+.preset-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 11px 0 13px; }
+.preset-button { border: 1px solid #2b3a52; background: #111b2d; color: #91a3bd; border-radius: 8px; padding: 7px 5px; font-size: 10px; font-weight: 800; }
+.preset-button:hover { border-color: #3b82f6; color: #bfdbfe; }
+.preset-button.active { border-color: #3b82f6; background: rgba(37, 99, 235, .22); color: #dbeafe; }
+.compact-field { margin-bottom: 12px; gap: 5px; }
+.compact-field small { color: #74869f; font-weight: 500; line-height: 1.35; }
+.range-title { display: flex; align-items: center; justify-content: space-between; }
+.range-title b { min-width: 30px; margin-left: auto; text-align: right; }
 
 .upload-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; margin: -4px 0 14px; }
 .upload-button { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 8px 12px; cursor: pointer; }
