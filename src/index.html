@@ -109,9 +109,16 @@
           <span>AI 배경 엔진</span>
           <select id="aiEngineSelect">
             <option value="mediapipe">빠른 모드 · MediaPipe</option>
-            <option value="modnet">고품질 모드 · MODNet (실험)</option>
+            <option value="modnet">고품질 · 배경 기준 (실험)</option>
           </select>
         </label>
+
+        <div id="backgroundReferenceControls" class="info-box field-note">
+          <strong>배경 기준 방식</strong>
+          <span>고품질 모드에서는 사람이 화면에서 잠깐 벗어난 뒤 빈 배경을 한 번 촬영합니다.</span>
+          <button id="backgroundReferenceButton" class="button subtle full" type="button">빈 배경 촬영</button>
+          <span id="backgroundReferenceStatus">미리보기 시작 → 고품질 모드 선택 → 사람이 비킨 상태에서 촬영</span>
+        </div>
 
         <div id="backgroundImageControls" class="upload-row hidden">
           <label class="button subtle upload-button" for="backgroundImageInput">이미지 선택</label>
