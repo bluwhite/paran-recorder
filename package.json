@@ -1,38 +1,20 @@
 {
   "name": "paran-recorder",
-  "version": "0.1.0",
-  "description": "Lecture screen recorder with camera overlay and microphone support",
-  "main": "src/main.js",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Web-first lecture recorder prepared for Tauri desktop and mobile packaging",
   "author": "bluwhite",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac"
+    "dev": "vite",
+    "build:web": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "devDependencies": {
-    "electron": "44.4.1",
-    "electron-builder": "26.0.12"
-  },
-  "build": {
-    "appId": "com.paran.recorder",
-    "productName": "Paran Recorder",
-    "files": [
-      "src/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": ["nsis"]
-    },
-    "mac": {
-      "target": ["dmg"],
-      "category": "public.app-category.education",
-      "extendInfo": {
-        "NSCameraUsageDescription": "Paran Recorder uses the camera to place the lecturer on the recording.",
-        "NSMicrophoneUsageDescription": "Paran Recorder uses the microphone to record lecture audio."
-      }
-    }
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^8.0.0"
   }
 }
