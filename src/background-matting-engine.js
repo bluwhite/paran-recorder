@@ -2,10 +2,14 @@ import * as ort from 'onnxruntime-web';
 
 const ORT_VERSION = '1.30.0';
 const MODEL_URL = 'https://huggingface.co/onnx-community/BackgroundMattingV2-hd/resolve/main/onnx/model.onnx';
-const MAX_INPUT_WIDTH = 640;
+const MAX_INPUT_WIDTH = 512;
+const MIN_INFERENCE_INTERVAL_MS = 120;
 
 ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 ort.env.wasm.numThreads = 1;
+// Keep BackgroundMattingV2 on the fully compatible WASM backend, but move the
+// heavy session work to ORT's proxy Web Worker so the recorder UI stays responsive.
+ort.env.wasm.proxy = true;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -62,6 +66,7 @@ export class BackgroundMattingV2Engine {
     this.busy = false;
     this.pendingError = null;
     this.lastDiagnosticsAt = 0;
+    this.lastRunStartedAt = 0;
 
     this.width = 0;
     this.height = 0;
@@ -94,15 +99,14 @@ export class BackgroundMattingV2Engine {
   async #initialize() {
     // The official BackgroundMattingV2 ONNX graph uses ROIAlign and
     // ScatterElements. ORT Web's WASM backend supports the full ONNX operator
-    // set, while WebGPU supports only a subset, so use WASM first to validate
-    // correctness before attempting GPU acceleration.
-    this.onStatus('배경 기준 AI WASM 모델 불러오는 중');
+    // set. The proxy worker keeps that compatible backend without blocking UI.
+    this.onStatus('배경 기준 AI WASM Worker 모델 불러오는 중');
     this.session = await ort.InferenceSession.create(MODEL_URL, {
       graphOptimizationLevel: 'all',
       executionMode: 'sequential',
       executionProviders: ['wasm'],
     });
-    this.delegate = 'WASM';
+    this.delegate = 'WASM Worker';
 
     this.#updateStatus();
     return this.session;
@@ -128,6 +132,7 @@ export class BackgroundMattingV2Engine {
     this.referenceBuffer = new Float32Array(3 * width * height);
     this.latestMask = null;
     this.previousAlpha = null;
+    this.lastRunStartedAt = 0;
   }
 
   captureBackground(imageSource) {
@@ -150,6 +155,7 @@ export class BackgroundMattingV2Engine {
     this.referenceReady = false;
     this.latestMask = null;
     this.previousAlpha = null;
+    this.lastRunStartedAt = 0;
     this.#updateStatus();
   }
 
@@ -168,7 +174,7 @@ export class BackgroundMattingV2Engine {
 
   #reportDiagnostics(minAlpha, maxAlpha, meanAlpha) {
     const now = performance.now();
-    if (now - this.lastDiagnosticsAt < 750) return;
+    if (now - this.lastDiagnosticsAt < 1000) return;
     this.lastDiagnosticsAt = now;
 
     const min = minAlpha.toFixed(2);
@@ -231,7 +237,9 @@ export class BackgroundMattingV2Engine {
       throw error;
     }
 
-    if (!this.busy) {
+    const now = performance.now();
+    if (!this.busy && now - this.lastRunStartedAt >= MIN_INFERENCE_INTERVAL_MS) {
+      this.lastRunStartedAt = now;
       this.busy = true;
       this.#run(imageSource)
         .catch((error) => {
@@ -259,6 +267,7 @@ export class BackgroundMattingV2Engine {
     this.referenceBuffer = null;
     this.width = 0;
     this.height = 0;
+    this.lastRunStartedAt = 0;
     if (session?.release) {
       Promise.resolve(session.release()).catch(() => {});
     }
