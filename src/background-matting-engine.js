@@ -1,5 +1,7 @@
-const MAX_INPUT_WIDTH = 320;
-const MIN_IDLE_AFTER_INFERENCE_MS = 80;
+const MAX_INPUT_WIDTH = 384;
+const MIN_IDLE_AFTER_INFERENCE_MS = 20;
+const MODEL_DOWNSAMPLE = 4;
+const MODEL_TOPK_MIN_AXIS = 5000;
 const REFERENCE_DB_NAME = 'paran-recorder-backgrounds';
 const REFERENCE_DB_VERSION = 1;
 const REFERENCE_STORE = 'references';
@@ -21,14 +23,36 @@ function errorText(error) {
   return String(error ?? '알 수 없는 오류');
 }
 
+function isModelSizeSupported(width, height) {
+  const internalWidth = Math.floor(width / MODEL_DOWNSAMPLE);
+  const internalHeight = Math.floor(height / MODEL_DOWNSAMPLE);
+  return internalWidth * internalHeight >= MODEL_TOPK_MIN_AXIS;
+}
+
 function targetSize(imageSource) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
   const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || 720;
-  const scale = Math.min(1, MAX_INPUT_WIDTH / sourceWidth);
-  return {
-    width: Math.max(64, Math.round(sourceWidth * scale)),
-    height: Math.max(64, Math.round(sourceHeight * scale)),
-  };
+  let scale = Math.min(1, MAX_INPUT_WIDTH / sourceWidth);
+  let width = Math.max(64, Math.round(sourceWidth * scale));
+  let height = Math.max(64, Math.round(sourceHeight * scale));
+
+  if (!isModelSizeSupported(width, height) && scale < 1) {
+    const internalArea = Math.max(1,
+      Math.floor(width / MODEL_DOWNSAMPLE) * Math.floor(height / MODEL_DOWNSAMPLE));
+    const extraScale = Math.sqrt(MODEL_TOPK_MIN_AXIS / internalArea) * 1.03;
+    scale = Math.min(1, scale * extraScale);
+    width = Math.max(64, Math.round(sourceWidth * scale));
+    height = Math.max(64, Math.round(sourceHeight * scale));
+  }
+
+  width = Math.max(64, Math.round(width / 4) * 4);
+  height = Math.max(64, Math.round(height / 4) * 4);
+
+  if (!isModelSizeSupported(width, height)) {
+    throw new Error(`카메라 입력 해상도가 BackgroundMattingV2 최소 조건을 충족하지 못합니다: ${width}×${height}`);
+  }
+
+  return { width, height };
 }
 
 function snapshotCanvas(imageSource, width, height) {
@@ -98,6 +122,21 @@ async function loadStoredReference() {
   }
 }
 
+async function deleteStoredReference() {
+  try {
+    const db = await openReferenceDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(REFERENCE_STORE, 'readwrite');
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('저장된 기준 배경을 삭제할 수 없습니다.'));
+      transaction.objectStore(REFERENCE_STORE).delete(REFERENCE_ID);
+    });
+    db.close();
+  } catch (error) {
+    console.warn('Saved background reference could not be deleted.', error);
+  }
+}
+
 async function saveStoredReference(referenceBuffer, width, height, imageBlob) {
   try {
     const db = await openReferenceDb();
@@ -107,7 +146,7 @@ async function saveStoredReference(referenceBuffer, width, height, imageBlob) {
       transaction.onerror = () => reject(transaction.error || new Error('기준 배경을 저장할 수 없습니다.'));
       transaction.objectStore(REFERENCE_STORE).put({
         id: REFERENCE_ID,
-        version: 2,
+        version: 3,
         width,
         height,
         referenceBuffer,
@@ -202,7 +241,7 @@ export class BackgroundMattingV2Engine {
     this.onStatus('배경 기준 AI Worker 모델 불러오는 중');
     await this.#request('init');
     this.ready = true;
-    this.delegate = 'WASM Worker · 균형';
+    this.delegate = 'WASM Worker · 384 저지연';
     await this.#restoreStoredReference();
     this.#updateStatus();
     return true;
@@ -212,9 +251,15 @@ export class BackgroundMattingV2Engine {
     const saved = await loadStoredReference();
     if (!saved?.referenceBuffer || !saved?.width || !saved?.height) return false;
 
+    const width = Number(saved.width);
+    const height = Number(saved.height);
+    if (!isModelSizeSupported(width, height)) {
+      console.warn(`Discarding incompatible saved background reference: ${width}x${height}`);
+      await deleteStoredReference();
+      return false;
+    }
+
     try {
-      const width = Number(saved.width);
-      const height = Number(saved.height);
       const referenceBuffer = saved.referenceBuffer.slice(0);
       await this.#request('restore', { referenceBuffer, width, height }, [referenceBuffer]);
       this.width = width;
@@ -237,6 +282,7 @@ export class BackgroundMattingV2Engine {
 
     if (!this.referenceReady) {
       this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · 배경 촬영 필요`);
+      if (referenceStatus) referenceStatus.textContent = '빈 배경을 새로 촬영해 주세요 · 3초 카운트다운';
       return;
     }
 
@@ -300,7 +346,8 @@ export class BackgroundMattingV2Engine {
     this.latestMask = null;
     this.savedReferenceBadFrames = 0;
     this.#request('clear').catch(() => {});
-    this.onStatus(`AI 준비 · 저장 배경 불일치 · 재촬영 필요`);
+    deleteStoredReference().catch(() => {});
+    this.onStatus('AI 준비 · 저장 배경 불일치 · 재촬영 필요');
     const status = document.getElementById('backgroundReferenceStatus');
     if (status) {
       status.textContent = `저장 배경 불일치 · 다시 촬영 필요 · 차이 ${(diff * 100).toFixed(1)}% · α 평균 ${mean.toFixed(2)}`;
