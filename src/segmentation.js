@@ -1,27 +1,140 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
-import { BackgroundMattingV2Engine } from './background-matting-engine.js';
-import { ReferenceBackgroundEngine } from './reference-background-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
-const MEDIAPIPE_INTERVAL_MS = 45;
 const MEDIAPIPE_INPUT_WIDTH = 256;
 const MEDIAPIPE_INPUT_HEIGHT = 144;
+const SETTINGS_KEY = 'paran-recorder-mediapipe-settings-v1';
 
-function errorText(error) {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === 'string' && error.trim()) return error;
-  try {
-    const serialized = JSON.stringify(error);
-    if (serialized && serialized !== '{}') return serialized;
-  } catch {
-    // Fall through.
-  }
-  return String(error ?? '알 수 없는 오류');
+const PRESETS = {
+  balanced: { tracking: 70, cleanup: 55, preserve: 60 },
+  motion: { tracking: 90, cleanup: 45, preserve: 65 },
+  edge: { tracking: 65, cleanup: 80, preserve: 45 },
+};
+
+const PRESET_LABELS = {
+  balanced: '균형',
+  motion: '빠른 움직임',
+  edge: '경계 우선',
+  custom: '사용자 설정',
+};
+
+let currentSettings = loadSettings();
+let settingsUiBound = false;
+
+function clampSetting(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function normalizedSettings(value = {}) {
+  return {
+    tracking: clampSetting(value.tracking, PRESETS.balanced.tracking),
+    cleanup: clampSetting(value.cleanup, PRESETS.balanced.cleanup),
+    preserve: clampSetting(value.preserve, PRESETS.balanced.preserve),
+  };
+}
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+    return normalizedSettings(saved || PRESETS.balanced);
+  } catch {
+    return { ...PRESETS.balanced };
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings));
+  } catch {
+    // The recorder still works when storage is unavailable.
+  }
+}
+
+function sameSettings(a, b) {
+  return a.tracking === b.tracking
+    && a.cleanup === b.cleanup
+    && a.preserve === b.preserve;
+}
+
+function currentPresetName() {
+  for (const [name, values] of Object.entries(PRESETS)) {
+    if (sameSettings(currentSettings, values)) return name;
+  }
+  return 'custom';
+}
+
+function updateSettingsUi() {
+  const tracking = document.getElementById('aiTracking');
+  const cleanup = document.getElementById('aiCleanup');
+  const preserve = document.getElementById('aiPreserve');
+  const trackingValue = document.getElementById('aiTrackingValue');
+  const cleanupValue = document.getElementById('aiCleanupValue');
+  const preserveValue = document.getElementById('aiPreserveValue');
+  const presetLabel = document.getElementById('aiPresetLabel');
+  const presetName = currentPresetName();
+
+  if (tracking) tracking.value = String(currentSettings.tracking);
+  if (cleanup) cleanup.value = String(currentSettings.cleanup);
+  if (preserve) preserve.value = String(currentSettings.preserve);
+  if (trackingValue) trackingValue.textContent = String(currentSettings.tracking);
+  if (cleanupValue) cleanupValue.textContent = String(currentSettings.cleanup);
+  if (preserveValue) preserveValue.textContent = String(currentSettings.preserve);
+  if (presetLabel) presetLabel.textContent = PRESET_LABELS[presetName];
+
+  document.querySelectorAll('[data-ai-preset]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.aiPreset === presetName);
+  });
+}
+
+function applySettings(next) {
+  currentSettings = normalizedSettings(next);
+  saveSettings();
+  updateSettingsUi();
+}
+
+function bindSettingsUi() {
+  if (settingsUiBound) return;
+  settingsUiBound = true;
+
+  const controls = {
+    tracking: document.getElementById('aiTracking'),
+    cleanup: document.getElementById('aiCleanup'),
+    preserve: document.getElementById('aiPreserve'),
+  };
+
+  for (const [key, control] of Object.entries(controls)) {
+    control?.addEventListener('input', () => {
+      applySettings({ ...currentSettings, [key]: Number(control.value) });
+    });
+  }
+
+  document.querySelectorAll('[data-ai-preset]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const preset = PRESETS[button.dataset.aiPreset];
+      if (preset) applySettings(preset);
+    });
+  });
+
+  document.getElementById('aiResetButton')?.addEventListener('click', () => {
+    applySettings(PRESETS.balanced);
+  });
+
+  updateSettingsUi();
+}
+
+function runtimeTuning() {
+  const { tracking, cleanup, preserve } = currentSettings;
+  return {
+    intervalMs: Math.round(80 - (tracking * 0.5)),
+    previousWeight: Math.max(0, Math.min(0.10, 0.10 * (1 - (tracking / 90)))),
+    edgeNeighborThreshold: 0.50 + (cleanup * 0.0018),
+    edgeGain: 0.80 - (cleanup * 0.0045),
+    sparseNeighborMinimum: cleanup >= 75 ? 3 : (cleanup >= 45 ? 2 : 1),
+    headHaloRadius: Math.max(2, Math.min(8, Math.round(2.5 + (preserve * 0.05) - (cleanup * 0.01)))),
+  };
 }
 
 function dilateMask(source, width, height, radius) {
@@ -104,6 +217,33 @@ function largestConnectedRegion(binary, width, height) {
   return kept;
 }
 
+function trimSparseBoundary(binary, width, height, minimumNeighbors) {
+  if (minimumNeighbors <= 1) return binary;
+  const output = binary.slice();
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      if (!binary[index]) continue;
+      let neighbors = 0;
+      const y0 = Math.max(0, y - 1);
+      const y1 = Math.min(height - 1, y + 1);
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(width - 1, x + 1);
+      for (let yy = y0; yy <= y1; yy += 1) {
+        const row = yy * width;
+        for (let xx = x0; xx <= x1; xx += 1) {
+          if (xx === x && yy === y) continue;
+          neighbors += binary[row + xx];
+        }
+      }
+      if (neighbors < minimumNeighbors) output[index] = 0;
+    }
+  }
+
+  return output;
+}
+
 function enclosedHeadMask(head, width, height) {
   const rowMin = new Int32Array(height).fill(width);
   const rowMax = new Int32Array(height).fill(-1);
@@ -132,7 +272,7 @@ function enclosedHeadMask(head, width, height) {
   return enclosed;
 }
 
-function softenMask(binary, width, height, previous) {
+function softenMask(binary, width, height, previous, tuning) {
   const alpha = new Float32Array(binary.length);
   for (let y = 0; y < height; y += 1) {
     const y0 = Math.max(0, y - 1);
@@ -149,20 +289,23 @@ function softenMask(binary, width, height, previous) {
           count += binary[row + xx];
         }
       }
+
       const index = y * width + x;
       const neighborhood = count / total;
       const current = binary[index]
         ? Math.max(0.78, neighborhood)
-        : (neighborhood >= 0.60 ? Math.max(0, (neighborhood - 0.50) * 0.65) : 0);
-      alpha[index] = previous?.length === binary.length
-        ? (current * 0.98) + (previous[index] * 0.02)
-        : current;
+        : (neighborhood >= tuning.edgeNeighborThreshold
+          ? Math.max(0, (neighborhood - 0.50) * tuning.edgeGain)
+          : 0);
+      const previousWeight = previous?.length === binary.length ? tuning.previousWeight : 0;
+      alpha[index] = (current * (1 - previousWeight)) + ((previous?.[index] || 0) * previousWeight);
     }
   }
   return alpha;
 }
 
 function buildForegroundMask(categories, width, height, previous) {
+  const tuning = runtimeTuning();
   const size = categories.length;
   const core = new Uint8Array(size);
   const head = new Uint8Array(size);
@@ -173,8 +316,9 @@ function buildForegroundMask(categories, width, height, previous) {
     if (category === 1 || category === 3) head[i] = 1;
   }
 
-  const mainPerson = largestConnectedRegion(core, width, height);
-  const headHalo = dilateMask(head, width, height, 5);
+  const mainRegion = largestConnectedRegion(core, width, height);
+  const mainPerson = trimSparseBoundary(mainRegion, width, height, tuning.sparseNeighborMinimum);
+  const headHalo = dilateMask(head, width, height, tuning.headHaloRadius);
   const headInterior = enclosedHeadMask(head, width, height);
   const foreground = new Uint8Array(size);
 
@@ -185,8 +329,7 @@ function buildForegroundMask(categories, width, height, previous) {
       continue;
     }
 
-    // Class 5 is useful for glasses and other small facial accessories, but
-    // retaining it around the whole body tends to keep chair/background speckles.
+    // Class 5 is retained only near the head for glasses and small facial accessories.
     if (category === 5 && headHalo[i]) {
       foreground[i] = 1;
       continue;
@@ -195,7 +338,7 @@ function buildForegroundMask(categories, width, height, previous) {
     if (headInterior[i]) foreground[i] = 1;
   }
 
-  return softenMask(foreground, width, height, previous);
+  return softenMask(foreground, width, height, previous, tuning);
 }
 
 class MediaPipePersonSegmenter {
@@ -210,6 +353,7 @@ class MediaPipePersonSegmenter {
     this.realtimeCanvas = null;
     this.realtimeCtx = null;
     this.processing = false;
+    this.closed = false;
   }
 
   async ensureReady() {
@@ -219,9 +363,10 @@ class MediaPipePersonSegmenter {
     }
     if (this.initializing) return this.initializing;
 
+    this.closed = false;
     this.initializing = this.#initialize()
       .catch((error) => {
-        const normalized = error instanceof Error ? error : new Error(errorText(error));
+        const normalized = error instanceof Error ? error : new Error(String(error));
         this.onStatus('AI 로드 실패');
         throw normalized;
       })
@@ -233,7 +378,7 @@ class MediaPipePersonSegmenter {
   }
 
   async #initialize() {
-    this.onStatus('AI 고품질 모델 불러오는 중');
+    this.onStatus('AI MediaPipe 모델 불러오는 중');
     const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
     const makeOptions = (delegate) => ({
       baseOptions: { modelAssetPath: MODEL_URL, delegate },
@@ -246,18 +391,23 @@ class MediaPipePersonSegmenter {
       this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('GPU'));
       this.delegate = 'GPU';
     } catch (gpuError) {
-      console.warn('Multiclass GPU segmentation unavailable. Falling back to CPU.', gpuError);
+      console.warn('MediaPipe GPU segmentation unavailable. Falling back to CPU.', gpuError);
       this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('CPU'));
       this.delegate = 'CPU';
     }
 
     this.#startRealtimeLoop();
-    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate} · 22fps 추종 개선`);
+    this.#updateStatus();
     return this.segmenter;
   }
 
+  #updateStatus() {
+    const preset = PRESET_LABELS[currentPresetName()];
+    this.onStatus(`AI 준비 · MediaPipe ${this.delegate} · ${preset}`);
+  }
+
   #startRealtimeLoop() {
-    if (this.realtimeTimer) return;
+    if (this.realtimeTimer || this.closed) return;
     if (!this.realtimeCanvas) {
       this.realtimeCanvas = document.createElement('canvas');
       this.realtimeCanvas.width = MEDIAPIPE_INPUT_WIDTH;
@@ -265,12 +415,20 @@ class MediaPipePersonSegmenter {
       this.realtimeCtx = this.realtimeCanvas.getContext('2d', { alpha: false });
     }
 
-    this.realtimeTimer = setInterval(() => {
+    const tick = () => {
+      this.realtimeTimer = null;
+      if (this.closed || !this.segmenter) return;
+
       const cameraVideo = document.getElementById('cameraVideo');
-      if (!this.segmenter || this.processing || !cameraVideo || cameraVideo.readyState < 2) return;
-      this.realtimeCtx.drawImage(cameraVideo, 0, 0, MEDIAPIPE_INPUT_WIDTH, MEDIAPIPE_INPUT_HEIGHT);
-      this.#processFrame(this.realtimeCanvas, performance.now());
-    }, MEDIAPIPE_INTERVAL_MS);
+      if (!this.processing && cameraVideo?.readyState >= 2) {
+        this.realtimeCtx.drawImage(cameraVideo, 0, 0, MEDIAPIPE_INPUT_WIDTH, MEDIAPIPE_INPUT_HEIGHT);
+        this.#processFrame(this.realtimeCanvas, performance.now());
+      }
+
+      this.realtimeTimer = setTimeout(tick, runtimeTuning().intervalMs);
+    };
+
+    this.realtimeTimer = setTimeout(tick, 0);
   }
 
   #processFrame(imageSource, timestampMs) {
@@ -305,11 +463,13 @@ class MediaPipePersonSegmenter {
     if (!this.segmenter) return this.latestMask;
     this.#startRealtimeLoop();
     if (!this.latestMask) return this.#processFrame(imageSource, timestampMs);
+    this.#updateStatus();
     return this.latestMask;
   }
 
   close() {
-    if (this.realtimeTimer) clearInterval(this.realtimeTimer);
+    this.closed = true;
+    if (this.realtimeTimer) clearTimeout(this.realtimeTimer);
     this.realtimeTimer = null;
     try { this.segmenter?.close(); } catch { /* best effort */ }
     this.segmenter = null;
@@ -323,111 +483,27 @@ class MediaPipePersonSegmenter {
 export class PersonSegmenter {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.engine = null;
-    this.engineMode = '';
-    this.#wireBackgroundCaptureButton();
-  }
-
-  #selectedMode() {
-    const value = document.getElementById('aiEngineSelect')?.value;
-    if (value === 'reference') return 'reference';
-    if (value === 'modnet') return 'backgroundmatting';
-    return 'mediapipe';
-  }
-
-  #getEngine() {
-    const selectedMode = this.#selectedMode();
-    if (this.engine && this.engineMode === selectedMode) return this.engine;
-
-    this.engine?.close?.();
-    this.engineMode = selectedMode;
-    if (selectedMode === 'backgroundmatting') {
-      this.engine = new BackgroundMattingV2Engine(this.onStatus);
-    } else if (selectedMode === 'reference') {
-      this.engine = new ReferenceBackgroundEngine(this.onStatus);
-    } else {
-      this.engine = new MediaPipePersonSegmenter(this.onStatus);
-    }
-    return this.engine;
-  }
-
-  #wireBackgroundCaptureButton() {
-    const button = document.getElementById('backgroundReferenceButton');
-    const status = document.getElementById('backgroundReferenceStatus');
-    if (!button) return;
-    const defaultButtonText = button.textContent;
-
-    button.addEventListener('click', async () => {
-      try {
-        const selectedMode = this.#selectedMode();
-        if (selectedMode !== 'backgroundmatting' && selectedMode !== 'reference') {
-          throw new Error('AI 배경 엔진을 배경 기준 모드로 먼저 선택하세요.');
-        }
-
-        const cameraVideo = document.getElementById('cameraVideo');
-        if (!cameraVideo || cameraVideo.readyState < 2) {
-          throw new Error('미리보기를 먼저 시작해 카메라 화면을 준비하세요.');
-        }
-
-        button.disabled = true;
-        const engine = this.#getEngine();
-        if (status) status.textContent = '배경 기준 준비 중...';
-        await engine.ensureReady();
-
-        for (let seconds = 3; seconds >= 1; seconds -= 1) {
-          button.textContent = `촬영 ${seconds}`;
-          if (status) status.textContent = `${seconds}초 후 빈 배경 촬영 · 화면에서 잠시 비켜 주세요`;
-          await sleep(1000);
-        }
-
-        if (!cameraVideo || cameraVideo.readyState < 2) {
-          throw new Error('촬영 전에 카메라 화면이 종료되었습니다.');
-        }
-
-        button.textContent = '촬영 중...';
-        if (status) status.textContent = '빈 배경 촬영 및 저장 중...';
-        const size = await engine.captureBackground(cameraVideo);
-        if (status) status.textContent = `빈 배경 저장 완료 · ${size.width}×${size.height} · 다음 촬영까지 재사용`;
-        this.onStatus(`AI 준비 · ${engine.delegate || '배경 기준'} · 배경 저장 완료`);
-      } catch (error) {
-        console.error('Background reference capture failed:', error);
-        if (status) status.textContent = `배경 촬영 오류 · ${errorText(error)}`;
-        this.onStatus('AI 오류');
-      } finally {
-        button.disabled = false;
-        button.textContent = defaultButtonText;
-      }
-    });
+    this.engine = new MediaPipePersonSegmenter(onStatus);
+    bindSettingsUi();
   }
 
   async ensureReady() {
-    return this.#getEngine().ensureReady();
+    return this.engine.ensureReady();
   }
 
   segment(imageSource, timestampMs = performance.now()) {
-    const engine = this.#getEngine();
-    if (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference') {
-      const cameraVideo = document.getElementById('cameraVideo');
-      const originalSource = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
-      return engine.segment(originalSource, timestampMs);
-    }
-    return engine.segment(imageSource, timestampMs);
+    return this.engine.segment(imageSource, timestampMs);
   }
 
   hasBackgroundReference() {
-    return (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference')
-      && Boolean(this.engine?.hasBackground?.());
+    return false;
   }
 
   clearBackgroundReference() {
-    if (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference') {
-      this.engine?.clearBackground?.();
-    }
+    // Kept as a no-op for renderer compatibility after removing reference engines.
   }
 
   close() {
-    this.engine?.close?.();
-    this.engine = null;
-    this.engineMode = '';
+    this.engine.close();
   }
 }
