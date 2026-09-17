@@ -15,138 +15,9 @@ function errorText(error) {
   return String(error ?? '알 수 없는 오류');
 }
 
-function smoothStep(edge0, edge1, value) {
-  const x = Math.max(0, Math.min(1, (value - edge0) / (edge1 - edge0)));
-  return x * x * (3 - 2 * x);
-}
-
-function closeBinaryMask(source, width, height) {
-  const dilated = new Uint8Array(source.length);
-  const closed = new Uint8Array(source.length);
-
-  for (let y = 0; y < height; y += 1) {
-    const y0 = Math.max(0, y - 1);
-    const y1 = Math.min(height - 1, y + 1);
-    for (let x = 0; x < width; x += 1) {
-      const x0 = Math.max(0, x - 1);
-      const x1 = Math.min(width - 1, x + 1);
-      let on = 0;
-      for (let yy = y0; yy <= y1 && !on; yy += 1) {
-        const row = yy * width;
-        for (let xx = x0; xx <= x1; xx += 1) {
-          if (source[row + xx]) {
-            on = 1;
-            break;
-          }
-        }
-      }
-      dilated[y * width + x] = on;
-    }
-  }
-
-  for (let y = 0; y < height; y += 1) {
-    const y0 = Math.max(0, y - 1);
-    const y1 = Math.min(height - 1, y + 1);
-    for (let x = 0; x < width; x += 1) {
-      const x0 = Math.max(0, x - 1);
-      const x1 = Math.min(width - 1, x + 1);
-      let on = 1;
-      for (let yy = y0; yy <= y1 && on; yy += 1) {
-        const row = yy * width;
-        for (let xx = x0; xx <= x1; xx += 1) {
-          if (!dilated[row + xx]) {
-            on = 0;
-            break;
-          }
-        }
-      }
-      closed[y * width + x] = on;
-    }
-  }
-
-  return closed;
-}
-
-function largestConnectedRegion(binary, width, height) {
-  const size = binary.length;
-  const labels = new Int32Array(size);
-  const queue = new Int32Array(size);
-  let label = 0;
-  let bestLabel = 0;
-  let bestScore = 0;
-
-  const centerX = (width - 1) / 2;
-  const centerY = (height - 1) / 2;
-  const maxDistance = Math.hypot(centerX, centerY) || 1;
-
-  for (let start = 0; start < size; start += 1) {
-    if (!binary[start] || labels[start]) continue;
-
-    label += 1;
-    let head = 0;
-    let tail = 0;
-    let count = 0;
-    let sumX = 0;
-    let sumY = 0;
-
-    queue[tail++] = start;
-    labels[start] = label;
-
-    while (head < tail) {
-      const index = queue[head++];
-      const y = Math.floor(index / width);
-      const x = index - y * width;
-      count += 1;
-      sumX += x;
-      sumY += y;
-
-      const left = index - 1;
-      const right = index + 1;
-      const up = index - width;
-      const down = index + width;
-
-      if (x > 0 && binary[left] && !labels[left]) {
-        labels[left] = label;
-        queue[tail++] = left;
-      }
-      if (x + 1 < width && binary[right] && !labels[right]) {
-        labels[right] = label;
-        queue[tail++] = right;
-      }
-      if (y > 0 && binary[up] && !labels[up]) {
-        labels[up] = label;
-        queue[tail++] = up;
-      }
-      if (y + 1 < height && binary[down] && !labels[down]) {
-        labels[down] = label;
-        queue[tail++] = down;
-      }
-    }
-
-    const componentX = sumX / count;
-    const componentY = sumY / count;
-    const distance = Math.hypot(componentX - centerX, componentY - centerY) / maxDistance;
-    const centerBonus = 1 + Math.max(0, 0.4 - distance) * 0.8;
-    const score = count * centerBonus;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestLabel = label;
-    }
-  }
-
-  const kept = new Uint8Array(size);
-  if (!bestLabel) return kept;
-  for (let i = 0; i < size; i += 1) {
-    if (labels[i] === bestLabel) kept[i] = 1;
-  }
-  return kept;
-}
-
-function dilateMask(source, width, height, radius = 2) {
+function dilateMask(source, width, height, radius) {
   const result = new Uint8Array(source.length);
   const points = [];
-
   for (let dy = -radius; dy <= radius; dy += 1) {
     for (let dx = -radius; dx <= radius; dx += 1) {
       if ((dx * dx) + (dy * dy) <= radius * radius) points.push([dx, dy]);
@@ -160,45 +31,167 @@ function dilateMask(source, width, height, radius = 2) {
       for (const [dx, dy] of points) {
         const xx = x + dx;
         const yy = y + dy;
-        if (xx >= 0 && xx < width && yy >= 0 && yy < height) result[yy * width + xx] = 1;
+        if (xx >= 0 && xx < width && yy >= 0 && yy < height) {
+          result[yy * width + xx] = 1;
+        }
       }
     }
   }
   return result;
 }
 
-function cleanPersonMask(raw, previous, width, height) {
-  const size = raw.length;
-  const temporal = new Float32Array(size);
-  const core = new Uint8Array(size);
-  const previousWeight = previous?.length === size ? 0.38 : 0;
-  const currentWeight = 1 - previousWeight;
+function largestConnectedRegion(binary, width, height) {
+  const size = binary.length;
+  const labels = new Int32Array(size);
+  const queue = new Int32Array(size);
+  let label = 0;
+  let bestLabel = 0;
+  let bestCount = 0;
 
-  for (let i = 0; i < size; i += 1) {
-    const value = previousWeight
-      ? previous[i] * previousWeight + raw[i] * currentWeight
-      : raw[i];
-    temporal[i] = value;
-    core[i] = value >= 0.50 ? 1 : 0;
+  for (let start = 0; start < size; start += 1) {
+    if (!binary[start] || labels[start]) continue;
+    label += 1;
+    let head = 0;
+    let tail = 0;
+    let count = 0;
+    queue[tail++] = start;
+    labels[start] = label;
+
+    while (head < tail) {
+      const index = queue[head++];
+      const y = Math.floor(index / width);
+      const x = index - y * width;
+      count += 1;
+
+      if (x > 0 && binary[index - 1] && !labels[index - 1]) {
+        labels[index - 1] = label;
+        queue[tail++] = index - 1;
+      }
+      if (x + 1 < width && binary[index + 1] && !labels[index + 1]) {
+        labels[index + 1] = label;
+        queue[tail++] = index + 1;
+      }
+      if (y > 0 && binary[index - width] && !labels[index - width]) {
+        labels[index - width] = label;
+        queue[tail++] = index - width;
+      }
+      if (y + 1 < height && binary[index + width] && !labels[index + width]) {
+        labels[index + width] = label;
+        queue[tail++] = index + width;
+      }
+    }
+
+    if (count > bestCount) {
+      bestCount = count;
+      bestLabel = label;
+    }
   }
 
-  const closed = closeBinaryMask(core, width, height);
-  const mainPerson = largestConnectedRegion(closed, width, height);
-  const allowed = dilateMask(mainPerson, width, height, 2);
-  const cleaned = new Float32Array(size);
+  if (!bestLabel) return binary;
+  const kept = new Uint8Array(size);
+  for (let i = 0; i < size; i += 1) {
+    if (labels[i] === bestLabel) kept[i] = 1;
+  }
+  return kept;
+}
+
+function enclosedHeadMask(head, width, height) {
+  const rowMin = new Int32Array(height).fill(width);
+  const rowMax = new Int32Array(height).fill(-1);
+  const colMin = new Int32Array(width).fill(height);
+  const colMax = new Int32Array(width).fill(-1);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!head[y * width + x]) continue;
+      rowMin[y] = Math.min(rowMin[y], x);
+      rowMax[y] = Math.max(rowMax[y], x);
+      colMin[x] = Math.min(colMin[x], y);
+      colMax[x] = Math.max(colMax[x], y);
+    }
+  }
+
+  const enclosed = new Uint8Array(head.length);
+  for (let y = 0; y < height; y += 1) {
+    if (rowMax[y] < 0) continue;
+    for (let x = rowMin[y]; x <= rowMax[y]; x += 1) {
+      if (colMax[x] >= 0 && y >= colMin[x] && y <= colMax[x]) {
+        enclosed[y * width + x] = 1;
+      }
+    }
+  }
+  return enclosed;
+}
+
+function softenMask(binary, width, height, previous) {
+  const alpha = new Float32Array(binary.length);
+  for (let y = 0; y < height; y += 1) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x += 1) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(width - 1, x + 1);
+      let count = 0;
+      let total = 0;
+      for (let yy = y0; yy <= y1; yy += 1) {
+        const row = yy * width;
+        for (let xx = x0; xx <= x1; xx += 1) {
+          total += 1;
+          count += binary[row + xx];
+        }
+      }
+      const index = y * width + x;
+      const neighborhood = count / total;
+      const current = binary[index]
+        ? Math.max(0.72, neighborhood)
+        : (neighborhood >= 0.45 ? neighborhood * 0.48 : 0);
+      // Very light smoothing only; enough to reduce flicker without visible motion lag.
+      alpha[index] = previous?.length === binary.length
+        ? (current * 0.92) + (previous[index] * 0.08)
+        : current;
+    }
+  }
+  return alpha;
+}
+
+function buildForegroundMask(categories, width, height, previous) {
+  const size = categories.length;
+  const core = new Uint8Array(size);
+  const head = new Uint8Array(size);
 
   for (let i = 0; i < size; i += 1) {
-    if (!allowed[i]) {
-      cleaned[i] = 0;
+    const category = categories[i];
+    // 1 hair, 2 body-skin, 3 face-skin, 4 clothes
+    if (category >= 1 && category <= 4) core[i] = 1;
+    if (category === 1 || category === 3) head[i] = 1;
+  }
+
+  const mainPerson = largestConnectedRegion(core, width, height);
+  const bodyHalo = dilateMask(mainPerson, width, height, 2);
+  const headHalo = dilateMask(head, width, height, 7);
+  const headInterior = enclosedHeadMask(head, width, height);
+  const foreground = new Uint8Array(size);
+
+  for (let i = 0; i < size; i += 1) {
+    const category = categories[i];
+    if (mainPerson[i]) {
+      foreground[i] = 1;
       continue;
     }
 
-    let alpha = smoothStep(0.24, 0.72, temporal[i]);
-    if (mainPerson[i] && temporal[i] > 0.50) alpha = Math.max(alpha, 0.9);
-    cleaned[i] = alpha;
+    // class 5 = others. Glasses, earphones and accessories often land here.
+    // Keep it only when it hugs the detected person, especially the head.
+    if (category === 5 && (headHalo[i] || bodyHalo[i])) {
+      foreground[i] = 1;
+      continue;
+    }
+
+    // Glass lenses can occasionally be classified as background. Fill only pixels
+    // enclosed by detected hair/face in both horizontal and vertical directions.
+    if (headInterior[i]) foreground[i] = 1;
   }
 
-  return { temporal, cleaned };
+  return softenMask(foreground, width, height, previous);
 }
 
 export class PersonSegmenter {
@@ -207,7 +200,7 @@ export class PersonSegmenter {
     this.segmenter = null;
     this.initializing = null;
     this.latestMask = null;
-    this.temporalMask = null;
+    this.previousAlpha = null;
     this.delegate = '';
   }
 
@@ -231,15 +224,11 @@ export class PersonSegmenter {
   async #initialize() {
     this.onStatus('AI 고품질 모델 불러오는 중');
     const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-
     const makeOptions = (delegate) => ({
-      baseOptions: {
-        modelAssetPath: MODEL_URL,
-        delegate,
-      },
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
       runningMode: 'VIDEO',
-      outputCategoryMask: false,
-      outputConfidenceMasks: true,
+      outputCategoryMask: true,
+      outputConfidenceMasks: false,
     });
 
     try {
@@ -251,43 +240,24 @@ export class PersonSegmenter {
       this.delegate = 'CPU';
     }
 
-    const labels = this.segmenter.getLabels?.() || [];
-    console.info('Multiclass segmentation labels:', labels);
-    this.onStatus(`AI 준비 · 멀티클래스 ${this.delegate}`);
+    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate}`);
     return this.segmenter;
   }
 
   segment(imageSource, timestampMs = performance.now()) {
     if (!this.segmenter) return this.latestMask;
-
-    // renderer.js가 낮은 해상도의 보조 캔버스를 넘겨도, 실제 모델에는
-    // 가능하면 카메라 원본 프레임을 직접 전달해 경계 정보를 보존한다.
-    const cameraVideo = document.getElementById('cameraVideo');
-    const source = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
-
     let copiedMask = null;
 
-    this.segmenter.segmentForVideo(source, timestampMs, (result) => {
+    this.segmenter.segmentForVideo(imageSource, timestampMs, (result) => {
       try {
-        const masks = result.confidenceMasks;
-        if (!masks || masks.length < 5) return;
-
-        const width = masks[0].width;
-        const height = masks[0].height;
-        const hair = masks[1].getAsFloat32Array();
-        const body = masks[2].getAsFloat32Array();
-        const face = masks[3].getAsFloat32Array();
-        const clothes = masks[4].getAsFloat32Array();
-        const raw = new Float32Array(width * height);
-
-        // class 5(others)는 배경 물체까지 끌고 들어오는 경우가 있어 제외한다.
-        for (let i = 0; i < raw.length; i += 1) {
-          raw[i] = Math.max(hair[i], body[i], face[i], clothes[i]);
-        }
-
-        const processed = cleanPersonMask(raw, this.temporalMask, width, height);
-        this.temporalMask = processed.temporal;
-        copiedMask = { width, height, data: processed.cleaned };
+        const mask = result.categoryMask;
+        if (!mask) return;
+        const categories = mask.getAsUint8Array();
+        const width = mask.width;
+        const height = mask.height;
+        const alpha = buildForegroundMask(categories, width, height, this.previousAlpha);
+        this.previousAlpha = alpha;
+        copiedMask = { width, height, data: alpha };
         this.latestMask = copiedMask;
       } finally {
         result.close();
@@ -301,7 +271,7 @@ export class PersonSegmenter {
     try { this.segmenter?.close(); } catch { /* best effort */ }
     this.segmenter = null;
     this.latestMask = null;
-    this.temporalMask = null;
+    this.previousAlpha = null;
     this.onStatus('AI 대기');
   }
 }
