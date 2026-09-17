@@ -5,6 +5,12 @@ const REFERENCE_STORE = 'references';
 const REFERENCE_ID = 'fast-reference';
 const FALLBACK_REFERENCE_ID = 'default';
 
+const STRONG_THRESHOLD = 0.072;
+const EDGE_LOW = 0.035;
+const EDGE_HIGH = 0.11;
+const EDGE_RADIUS = 2;
+const TEMPORAL_CURRENT = 0.97;
+
 function targetSize(imageSource) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
   const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || 720;
@@ -90,6 +96,25 @@ function dilate(source, width, height, radius, target) {
   }
 }
 
+function erode(source, width, height, radius, target) {
+  target.fill(0);
+  for (let y = radius; y < height - radius; y += 1) {
+    for (let x = radius; x < width - radius; x += 1) {
+      let keep = 1;
+      for (let yy = y - radius; yy <= y + radius && keep; yy += 1) {
+        const row = yy * width;
+        for (let xx = x - radius; xx <= x + radius; xx += 1) {
+          if (!source[row + xx]) {
+            keep = 0;
+            break;
+          }
+        }
+      }
+      if (keep) target[y * width + x] = 1;
+    }
+  }
+}
+
 function largestRegion(binary, width, height, labels, queue, output) {
   labels.fill(0);
   output.fill(0);
@@ -146,7 +171,7 @@ function largestRegion(binary, width, height, labels, queue, output) {
 export class ReferenceBackgroundEngine {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.delegate = '실시간 기준 배경';
+    this.delegate = '실시간 기준 배경 · 경계 개선';
     this.ready = false;
     this.initializing = null;
     this.referenceReady = false;
@@ -159,12 +184,15 @@ export class ReferenceBackgroundEngine {
     this.latestMask = null;
     this.previousAlpha = null;
     this.seed = null;
-    this.dilated = null;
+    this.expanded = null;
+    this.closed = null;
     this.region = null;
     this.halo = null;
     this.labels = null;
     this.queue = null;
     this.diff = null;
+    this.alpha = null;
+    this.encoded = null;
     this.lastStatusAt = 0;
   }
 
@@ -194,12 +222,15 @@ export class ReferenceBackgroundEngine {
     this.canvas.height = height;
     const size = width * height;
     this.seed = new Uint8Array(size);
-    this.dilated = new Uint8Array(size);
+    this.expanded = new Uint8Array(size);
+    this.closed = new Uint8Array(size);
     this.region = new Uint8Array(size);
     this.halo = new Uint8Array(size);
     this.labels = new Int32Array(size);
     this.queue = new Int32Array(size);
     this.diff = new Float32Array(size);
+    this.alpha = new Float32Array(size);
+    this.encoded = new Float32Array(size);
     this.previousAlpha = null;
     this.latestMask = null;
   }
@@ -263,7 +294,7 @@ export class ReferenceBackgroundEngine {
     try {
       await saveRecord({
         id: REFERENCE_ID,
-        version: 1,
+        version: 2,
         width,
         height,
         pixelBuffer: this.reference.buffer.slice(0),
@@ -336,29 +367,38 @@ export class ReferenceBackgroundEngine {
       const difference = ((dr * 0.25) + (dg * 0.5) + (db * 0.25)) / 255;
       this.diff[i] = difference;
       diffSum += difference;
-      if (difference > 0.065) this.seed[i] = 1;
+      if (difference > STRONG_THRESHOLD) this.seed[i] = 1;
     }
 
-    dilate(this.seed, this.width, this.height, 1, this.dilated);
-    largestRegion(this.dilated, this.width, this.height, this.labels, this.queue, this.region);
-    dilate(this.region, this.width, this.height, 4, this.halo);
+    // Close tiny holes without permanently expanding the subject boundary.
+    dilate(this.seed, this.width, this.height, 1, this.expanded);
+    erode(this.expanded, this.width, this.height, 1, this.closed);
 
-    const alpha = new Float32Array(plane);
+    // Keep only the main connected subject. Detached speckles disappear here.
+    largestRegion(this.closed, this.width, this.height, this.labels, this.queue, this.region);
+
+    // Only a narrow band around the main subject may become a soft edge.
+    dilate(this.region, this.width, this.height, EDGE_RADIUS, this.halo);
+
     const previous = this.previousAlpha?.length === plane ? this.previousAlpha : null;
     for (let i = 0; i < plane; i += 1) {
       let value = 0;
-      if (this.halo[i]) {
-        value = smoothstep(0.025, 0.13, this.diff[i]);
-        if (this.region[i]) value = Math.max(value, 0.88);
+      if (this.region[i]) {
+        value = Math.max(0.94, smoothstep(STRONG_THRESHOLD, 0.14, this.diff[i]));
+      } else if (this.halo[i]) {
+        const edge = smoothstep(EDGE_LOW, EDGE_HIGH, this.diff[i]);
+        value = edge * 0.82;
       }
-      const mixed = previous ? (value * 0.94) + (previous[i] * 0.06) : value;
-      alpha[i] = mixed;
-    }
-    this.previousAlpha = alpha;
 
-    const encoded = new Float32Array(plane);
-    for (let i = 0; i < plane; i += 1) encoded[i] = encodeAlphaForSharedRenderer(alpha[i]);
-    this.latestMask = { width: this.width, height: this.height, data: encoded };
+      const mixed = previous
+        ? (value * TEMPORAL_CURRENT) + (previous[i] * (1 - TEMPORAL_CURRENT))
+        : value;
+      this.alpha[i] = mixed;
+      this.encoded[i] = encodeAlphaForSharedRenderer(mixed);
+    }
+
+    this.previousAlpha = this.alpha.slice();
+    this.latestMask = { width: this.width, height: this.height, data: this.encoded.slice() };
 
     const now = performance.now();
     if (now - this.lastStatusAt > 1000) {
@@ -368,7 +408,7 @@ export class ReferenceBackgroundEngine {
       const status = document.getElementById('backgroundReferenceStatus');
       if (status) {
         const source = this.referenceSource === 'saved' ? '저장 배경 재사용' : '다음 촬영까지 재사용';
-        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 실시간 차분`;
+        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 경계 개선 실시간 차분`;
       }
     }
 
