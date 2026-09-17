@@ -1,5 +1,6 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { BackgroundMattingV2Engine } from './background-matting-engine.js';
+import { ReferenceBackgroundEngine } from './reference-background-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -284,7 +285,10 @@ export class PersonSegmenter {
   }
 
   #selectedMode() {
-    return document.getElementById('aiEngineSelect')?.value === 'modnet' ? 'backgroundmatting' : 'mediapipe';
+    const value = document.getElementById('aiEngineSelect')?.value;
+    if (value === 'reference') return 'reference';
+    if (value === 'modnet') return 'backgroundmatting';
+    return 'mediapipe';
   }
 
   #getEngine() {
@@ -293,9 +297,13 @@ export class PersonSegmenter {
 
     this.engine?.close?.();
     this.engineMode = selectedMode;
-    this.engine = selectedMode === 'backgroundmatting'
-      ? new BackgroundMattingV2Engine(this.onStatus)
-      : new MediaPipePersonSegmenter(this.onStatus);
+    if (selectedMode === 'backgroundmatting') {
+      this.engine = new BackgroundMattingV2Engine(this.onStatus);
+    } else if (selectedMode === 'reference') {
+      this.engine = new ReferenceBackgroundEngine(this.onStatus);
+    } else {
+      this.engine = new MediaPipePersonSegmenter(this.onStatus);
+    }
     return this.engine;
   }
 
@@ -307,8 +315,9 @@ export class PersonSegmenter {
 
     button.addEventListener('click', async () => {
       try {
-        if (this.#selectedMode() !== 'backgroundmatting') {
-          throw new Error('AI 배경 엔진을 고품질 · 배경 기준으로 먼저 선택하세요.');
+        const selectedMode = this.#selectedMode();
+        if (selectedMode !== 'backgroundmatting' && selectedMode !== 'reference') {
+          throw new Error('AI 배경 엔진을 배경 기준 모드로 먼저 선택하세요.');
         }
 
         const cameraVideo = document.getElementById('cameraVideo');
@@ -318,7 +327,7 @@ export class PersonSegmenter {
 
         button.disabled = true;
         const engine = this.#getEngine();
-        if (status) status.textContent = '모델 준비 중...';
+        if (status) status.textContent = '배경 기준 준비 중...';
         await engine.ensureReady();
 
         for (let seconds = 3; seconds >= 1; seconds -= 1) {
@@ -335,7 +344,7 @@ export class PersonSegmenter {
         if (status) status.textContent = '빈 배경 촬영 및 저장 중...';
         const size = await engine.captureBackground(cameraVideo);
         if (status) status.textContent = `빈 배경 저장 완료 · ${size.width}×${size.height} · 다음 촬영까지 재사용`;
-        this.onStatus(`AI 준비 · 배경 기준 ${engine.delegate || ''} · 배경 저장 완료`);
+        this.onStatus(`AI 준비 · ${engine.delegate || '배경 기준'} · 배경 저장 완료`);
       } catch (error) {
         console.error('Background reference capture failed:', error);
         if (status) status.textContent = `배경 촬영 오류 · ${errorText(error)}`;
@@ -353,7 +362,7 @@ export class PersonSegmenter {
 
   segment(imageSource, timestampMs = performance.now()) {
     const engine = this.#getEngine();
-    if (this.engineMode === 'backgroundmatting') {
+    if (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference') {
       const cameraVideo = document.getElementById('cameraVideo');
       const originalSource = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
       return engine.segment(originalSource, timestampMs);
@@ -362,11 +371,14 @@ export class PersonSegmenter {
   }
 
   hasBackgroundReference() {
-    return this.engineMode === 'backgroundmatting' && Boolean(this.engine?.hasBackground?.());
+    return (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference')
+      && Boolean(this.engine?.hasBackground?.());
   }
 
   clearBackgroundReference() {
-    if (this.engineMode === 'backgroundmatting') this.engine?.clearBackground?.();
+    if (this.engineMode === 'backgroundmatting' || this.engineMode === 'reference') {
+      this.engine?.clearBackground?.();
+    }
   }
 
   close() {
