@@ -71,6 +71,33 @@ function preprocessBitmap(bitmap, target) {
   rgbaToRgbTensorData(pixels, target);
 }
 
+function backgroundDifference() {
+  if (!sourceBuffer || !referenceBuffer || sourceBuffer.length !== referenceBuffer.length) return 1;
+
+  // Compare mostly the outer/background region so the presenter's body does not
+  // by itself make a previously captured room look invalid.
+  const plane = width * height;
+  const leftLimit = Math.floor(width * 0.22);
+  const rightStart = Math.ceil(width * 0.78);
+  const topLimit = Math.floor(height * 0.22);
+  let total = 0;
+  let count = 0;
+
+  for (let y = 0; y < height; y += 2) {
+    const row = y * width;
+    for (let x = 0; x < width; x += 2) {
+      if (!(x < leftLimit || x >= rightStart || y < topLimit)) continue;
+      const pixel = row + x;
+      total += Math.abs(sourceBuffer[pixel] - referenceBuffer[pixel]);
+      total += Math.abs(sourceBuffer[plane + pixel] - referenceBuffer[plane + pixel]);
+      total += Math.abs(sourceBuffer[(plane * 2) + pixel] - referenceBuffer[(plane * 2) + pixel]);
+      count += 3;
+    }
+  }
+
+  return count ? total / count : 1;
+}
+
 async function ensureSession() {
   if (session) return session;
   session = await ort.InferenceSession.create(MODEL_URL, {
@@ -83,6 +110,7 @@ async function ensureSession() {
 
 async function runMatting(bitmap) {
   preprocessBitmap(bitmap, sourceBuffer);
+  const referenceDiff = backgroundDifference();
   const dims = [1, 3, height, width];
   const startedAt = performance.now();
   const results = await session.run({
@@ -123,6 +151,7 @@ async function runMatting(bitmap) {
     minAlpha,
     maxAlpha,
     meanAlpha: sumAlpha / Math.max(1, size),
+    referenceDiff,
     inferenceMs,
   };
 }
@@ -177,6 +206,7 @@ self.addEventListener('message', async (event) => {
         minAlpha: result.minAlpha,
         maxAlpha: result.maxAlpha,
         meanAlpha: result.meanAlpha,
+        referenceDiff: result.referenceDiff,
         inferenceMs: result.inferenceMs,
       }, [result.data.buffer]);
       return;
