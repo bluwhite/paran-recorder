@@ -1,4 +1,7 @@
-const ASSET_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747';
+import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
+
+const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -7,7 +10,7 @@ function errorText(error) {
     const serialized = JSON.stringify(error);
     if (serialized && serialized !== '{}') return serialized;
   } catch {
-    // Fall through to a readable generic message.
+    // Fall through.
   }
   return String(error ?? '알 수 없는 오류');
 }
@@ -123,7 +126,7 @@ function largestConnectedRegion(binary, width, height) {
     const componentX = sumX / count;
     const componentY = sumY / count;
     const distance = Math.hypot(componentX - centerX, componentY - centerY) / maxDistance;
-    const centerBonus = 1 + Math.max(0, 0.35 - distance) * 0.55;
+    const centerBonus = 1 + Math.max(0, 0.4 - distance) * 0.8;
     const score = count * centerBonus;
 
     if (score > bestScore) {
@@ -140,7 +143,7 @@ function largestConnectedRegion(binary, width, height) {
   return kept;
 }
 
-function dilateMask(source, width, height, radius = 3) {
+function dilateMask(source, width, height, radius = 2) {
   const result = new Uint8Array(source.length);
   const points = [];
 
@@ -157,13 +160,10 @@ function dilateMask(source, width, height, radius = 3) {
       for (const [dx, dy] of points) {
         const xx = x + dx;
         const yy = y + dy;
-        if (xx >= 0 && xx < width && yy >= 0 && yy < height) {
-          result[yy * width + xx] = 1;
-        }
+        if (xx >= 0 && xx < width && yy >= 0 && yy < height) result[yy * width + xx] = 1;
       }
     }
   }
-
   return result;
 }
 
@@ -171,9 +171,7 @@ function cleanPersonMask(raw, previous, width, height) {
   const size = raw.length;
   const temporal = new Float32Array(size);
   const core = new Uint8Array(size);
-
-  // 시간축 안정화: 배경의 작은 깜빡임은 줄이되 빠른 움직임은 따라간다.
-  const previousWeight = previous?.length === size ? 0.58 : 0;
+  const previousWeight = previous?.length === size ? 0.38 : 0;
   const currentWeight = 1 - previousWeight;
 
   for (let i = 0; i < size; i += 1) {
@@ -181,13 +179,12 @@ function cleanPersonMask(raw, previous, width, height) {
       ? previous[i] * previousWeight + raw[i] * currentWeight
       : raw[i];
     temporal[i] = value;
-    core[i] = value >= 0.52 ? 1 : 0;
+    core[i] = value >= 0.50 ? 1 : 0;
   }
 
-  // 몸 안의 작은 빈틈을 먼저 메운 뒤, 사람과 떨어진 잡영을 제거한다.
   const closed = closeBinaryMask(core, width, height);
   const mainPerson = largestConnectedRegion(closed, width, height);
-  const allowed = dilateMask(mainPerson, width, height, 4);
+  const allowed = dilateMask(mainPerson, width, height, 2);
   const cleaned = new Float32Array(size);
 
   for (let i = 0; i < size; i += 1) {
@@ -196,9 +193,8 @@ function cleanPersonMask(raw, previous, width, height) {
       continue;
     }
 
-    // 내부는 확실히 살리고 경계만 부드럽게 남긴다.
-    let alpha = smoothStep(0.30, 0.70, temporal[i]);
-    if (mainPerson[i] && temporal[i] > 0.46) alpha = Math.max(alpha, 0.82);
+    let alpha = smoothStep(0.24, 0.72, temporal[i]);
+    if (mainPerson[i] && temporal[i] > 0.50) alpha = Math.max(alpha, 0.9);
     cleaned[i] = alpha;
   }
 
@@ -208,20 +204,15 @@ function cleanPersonMask(raw, previous, width, height) {
 export class PersonSegmenter {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.solution = null;
+    this.segmenter = null;
     this.initializing = null;
     this.latestMask = null;
     this.temporalMask = null;
-    this.busy = false;
-    this.pendingError = null;
-    this.maskWidth = 320;
-    this.maskHeight = 180;
-    this.maskCanvas = document.createElement('canvas');
-    this.maskContext = this.maskCanvas.getContext('2d', { willReadFrequently: true });
+    this.delegate = '';
   }
 
   async ensureReady() {
-    if (this.solution) return this.solution;
+    if (this.segmenter) return this.segmenter;
     if (this.initializing) return this.initializing;
 
     this.initializing = this.#initialize()
@@ -238,97 +229,79 @@ export class PersonSegmenter {
   }
 
   async #initialize() {
-    this.onStatus('AI 모델 불러오는 중');
+    this.onStatus('AI 고품질 모델 불러오는 중');
+    const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
 
-    const SelfieSegmentation = globalThis.SelfieSegmentation;
-    if (typeof SelfieSegmentation !== 'function') {
-      throw new Error('Selfie Segmentation 라이브러리를 불러오지 못했습니다. 페이지를 새로고침해 주세요.');
+    const makeOptions = (delegate) => ({
+      baseOptions: {
+        modelAssetPath: MODEL_URL,
+        delegate,
+      },
+      runningMode: 'VIDEO',
+      outputCategoryMask: false,
+      outputConfidenceMasks: true,
+    });
+
+    try {
+      this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('GPU'));
+      this.delegate = 'GPU';
+    } catch (gpuError) {
+      console.warn('Multiclass GPU segmentation unavailable. Falling back to CPU.', gpuError);
+      this.segmenter = await ImageSegmenter.createFromOptions(vision, makeOptions('CPU'));
+      this.delegate = 'CPU';
     }
 
-    const solution = new SelfieSegmentation({
-      locateFile: (file) => `${ASSET_ROOT}/${file}`,
-    });
+    const labels = this.segmenter.getLabels?.() || [];
+    console.info('Multiclass segmentation labels:', labels);
+    this.onStatus(`AI 준비 · 멀티클래스 ${this.delegate}`);
+    return this.segmenter;
+  }
 
-    solution.setOptions({
-      modelSelection: 0,
-      selfieMode: false,
-    });
+  segment(imageSource, timestampMs = performance.now()) {
+    if (!this.segmenter) return this.latestMask;
 
-    solution.onResults((results) => {
+    // renderer.js가 낮은 해상도의 보조 캔버스를 넘겨도, 실제 모델에는
+    // 가능하면 카메라 원본 프레임을 직접 전달해 경계 정보를 보존한다.
+    const cameraVideo = document.getElementById('cameraVideo');
+    const source = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
+
+    let copiedMask = null;
+
+    this.segmenter.segmentForVideo(source, timestampMs, (result) => {
       try {
-        if (!results?.segmentationMask) return;
+        const masks = result.confidenceMasks;
+        if (!masks || masks.length < 5) return;
 
-        const width = this.maskWidth;
-        const height = this.maskHeight;
-        if (this.maskCanvas.width !== width || this.maskCanvas.height !== height) {
-          this.maskCanvas.width = width;
-          this.maskCanvas.height = height;
-        }
-
-        this.maskContext.clearRect(0, 0, width, height);
-        this.maskContext.drawImage(results.segmentationMask, 0, 0, width, height);
-        const pixels = this.maskContext.getImageData(0, 0, width, height).data;
+        const width = masks[0].width;
+        const height = masks[0].height;
+        const hair = masks[1].getAsFloat32Array();
+        const body = masks[2].getAsFloat32Array();
+        const face = masks[3].getAsFloat32Array();
+        const clothes = masks[4].getAsFloat32Array();
         const raw = new Float32Array(width * height);
 
-        for (let i = 0, pixel = 0; i < pixels.length; i += 4, pixel += 1) {
-          raw[pixel] = Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) / 255;
+        // class 5(others)는 배경 물체까지 끌고 들어오는 경우가 있어 제외한다.
+        for (let i = 0; i < raw.length; i += 1) {
+          raw[i] = Math.max(hair[i], body[i], face[i], clothes[i]);
         }
 
         const processed = cleanPersonMask(raw, this.temporalMask, width, height);
         this.temporalMask = processed.temporal;
-        this.latestMask = { width, height, data: processed.cleaned };
-        this.pendingError = null;
-      } catch (error) {
-        this.pendingError = error instanceof Error ? error : new Error(errorText(error));
+        copiedMask = { width, height, data: processed.cleaned };
+        this.latestMask = copiedMask;
+      } finally {
+        result.close();
       }
     });
 
-    try {
-      await solution.initialize();
-    } catch (error) {
-      try { await solution.close(); } catch { /* best effort */ }
-      throw new Error(`셀피 분할 모델 초기화 실패: ${errorText(error)}`);
-    }
-
-    this.solution = solution;
-    this.onStatus('AI 준비 · 정밀 분할');
-    return solution;
-  }
-
-  segment(imageSource) {
-    if (!this.solution) return this.latestMask;
-
-    if (this.pendingError) {
-      const error = this.pendingError;
-      this.pendingError = null;
-      throw error;
-    }
-
-    if (!this.busy) {
-      this.busy = true;
-      this.solution.send({ image: imageSource })
-        .catch((error) => {
-          this.pendingError = new Error(`셀피 분할 처리 실패: ${errorText(error)}`);
-          this.onStatus('AI 오류');
-        })
-        .finally(() => {
-          this.busy = false;
-        });
-    }
-
-    return this.latestMask;
+    return copiedMask || this.latestMask;
   }
 
   close() {
-    const solution = this.solution;
-    this.solution = null;
+    try { this.segmenter?.close(); } catch { /* best effort */ }
+    this.segmenter = null;
     this.latestMask = null;
     this.temporalMask = null;
-    this.busy = false;
-    this.pendingError = null;
-    if (solution) {
-      Promise.resolve(solution.close()).catch(() => {});
-    }
     this.onStatus('AI 대기');
   }
 }
