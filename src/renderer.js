@@ -1,7 +1,12 @@
+import { PersonSegmenter } from './segmentation.js';
+
 const canvas = document.getElementById('previewCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const screenVideo = document.getElementById('screenVideo');
 const cameraVideo = document.getElementById('cameraVideo');
+const segmentationInput = document.getElementById('segmentationInput');
+const segmentationInputCtx = segmentationInput.getContext('2d', { alpha: false, willReadFrequently: false });
+
 const emptyPreview = document.getElementById('emptyPreview');
 const cameraSelect = document.getElementById('cameraSelect');
 const microphoneSelect = document.getElementById('microphoneSelect');
@@ -9,23 +14,44 @@ const cameraEnabled = document.getElementById('cameraEnabled');
 const cameraPosition = document.getElementById('cameraPosition');
 const cameraSize = document.getElementById('cameraSize');
 const cameraSizeValue = document.getElementById('cameraSizeValue');
+const cameraShape = document.getElementById('cameraShape');
 const mirrorCamera = document.getElementById('mirrorCamera');
+const backgroundMode = document.getElementById('backgroundMode');
+const backgroundImageControls = document.getElementById('backgroundImageControls');
+const backgroundImageInput = document.getElementById('backgroundImageInput');
+const backgroundImageName = document.getElementById('backgroundImageName');
 const previewButton = document.getElementById('previewButton');
 const recordButton = document.getElementById('recordButton');
 const stopButton = document.getElementById('stopButton');
+const markerButton = document.getElementById('markerButton');
 const refreshDevicesButton = document.getElementById('refreshDevicesButton');
+const sceneButtons = [...document.querySelectorAll('.scene-button')];
 const message = document.getElementById('message');
 const statusBadge = document.getElementById('statusBadge');
+const aiStatus = document.getElementById('aiStatus');
 const recordingTimer = document.getElementById('recordingTimer');
+const markerCount = document.getElementById('markerCount');
+const latestMarker = document.getElementById('latestMarker');
+const micLevelBar = document.getElementById('micLevelBar');
+const micDb = document.getElementById('micDb');
 const systemAudioInfo = document.getElementById('systemAudioInfo');
 const saveModeInfo = document.getElementById('saveModeInfo');
 const runtimeLabel = document.getElementById('runtimeLabel');
+
+const cameraCompositeCanvas = document.createElement('canvas');
+const cameraCompositeCtx = cameraCompositeCanvas.getContext('2d');
+const foregroundCanvas = document.createElement('canvas');
+const foregroundCtx = foregroundCanvas.getContext('2d');
+const maskCanvas = document.createElement('canvas');
+const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
 
 let displayStream = null;
 let cameraStream = null;
 let microphoneStream = null;
 let audioContext = null;
 let audioDestination = null;
+let micAnalyser = null;
+let micMeterFrameId = null;
 let drawFrameId = null;
 let mediaRecorder = null;
 let recordingCanvasStream = null;
@@ -36,8 +62,22 @@ let fileWriter = null;
 let fallbackChunks = [];
 let recordingWriteChain = Promise.resolve();
 let currentFileName = '';
+let activeScene = 'small';
+let recordingMarkers = [];
+let backgroundImage = null;
+let backgroundImageUrl = null;
+let latestMask = null;
+let maskImageVersion = 0;
+let renderedMaskVersion = -1;
+let segmentBusy = false;
+let lastSegmentAt = 0;
+let segmentErrorShown = false;
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
+const segmenter = new PersonSegmenter((text) => {
+  aiStatus.textContent = text;
+  aiStatus.classList.toggle('ready', text.startsWith('AI 준비'));
+});
 
 function setMessage(text, isError = false) {
   message.textContent = text || '';
@@ -89,7 +129,6 @@ function fillSelect(select, devices, fallbackText) {
 
 async function refreshDevices(requestPermission = true) {
   let permissionStream = null;
-
   if (requestPermission) {
     try {
       permissionStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -105,25 +144,37 @@ async function refreshDevices(requestPermission = true) {
   fillSelect(microphoneSelect, devices.filter((device) => device.kind === 'audioinput'), '마이크');
 }
 
-function drawVideoContain(video, x, y, width, height) {
-  const sourceWidth = video.videoWidth || width;
-  const sourceHeight = video.videoHeight || height;
+function drawCover(context, source, x, y, width, height) {
+  const sourceWidth = source.videoWidth || source.naturalWidth || source.width || width;
+  const sourceHeight = source.videoHeight || source.naturalHeight || source.height || height;
+  const scale = Math.max(width / sourceWidth, height / sourceHeight);
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  const drawX = x + (width - drawWidth) / 2;
+  const drawY = y + (height - drawHeight) / 2;
+  context.drawImage(source, drawX, drawY, drawWidth, drawHeight);
+}
+
+function drawContain(context, source, x, y, width, height) {
+  const sourceWidth = source.videoWidth || source.naturalWidth || source.width || width;
+  const sourceHeight = source.videoHeight || source.naturalHeight || source.height || height;
   const scale = Math.min(width / sourceWidth, height / sourceHeight);
   const drawWidth = sourceWidth * scale;
   const drawHeight = sourceHeight * scale;
   const drawX = x + (width - drawWidth) / 2;
   const drawY = y + (height - drawHeight) / 2;
-
-  ctx.fillStyle = '#020617';
-  ctx.fillRect(x, y, width, height);
-  ctx.drawImage(video, drawX, drawY, drawWidth, drawHeight);
+  context.fillStyle = '#020617';
+  context.fillRect(x, y, width, height);
+  context.drawImage(source, drawX, drawY, drawWidth, drawHeight);
 }
 
 function cameraRect() {
   const width = canvas.width * (Number(cameraSize.value) / 100);
-  const ratio = cameraVideo.videoWidth && cameraVideo.videoHeight
-    ? cameraVideo.videoHeight / cameraVideo.videoWidth
-    : 9 / 16;
+  const ratio = cameraShape.value === 'circle'
+    ? 1
+    : (cameraVideo.videoWidth && cameraVideo.videoHeight
+      ? cameraVideo.videoHeight / cameraVideo.videoWidth
+      : 9 / 16);
   const height = width * ratio;
   const margin = 28;
 
@@ -135,63 +186,266 @@ function cameraRect() {
   }
 }
 
-function drawCamera() {
+function resizeCameraWorkCanvases() {
+  const sourceWidth = cameraVideo.videoWidth || 640;
+  const sourceHeight = cameraVideo.videoHeight || 360;
+  const scale = Math.min(1, 960 / sourceWidth);
+  const width = Math.max(2, Math.round(sourceWidth * scale));
+  const height = Math.max(2, Math.round(sourceHeight * scale));
+
+  for (const workCanvas of [cameraCompositeCanvas, foregroundCanvas]) {
+    if (workCanvas.width !== width || workCanvas.height !== height) {
+      workCanvas.width = width;
+      workCanvas.height = height;
+    }
+  }
+}
+
+function updateMaskCanvas() {
+  if (!latestMask || renderedMaskVersion === maskImageVersion) return;
+  const { width, height, data } = latestMask;
+  if (maskCanvas.width !== width || maskCanvas.height !== height) {
+    maskCanvas.width = width;
+    maskCanvas.height = height;
+  }
+
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < data.length; i += 1) {
+    const confidence = Math.max(0, Math.min(1, (data[i] - 0.12) / 0.76));
+    const smooth = confidence * confidence * (3 - 2 * confidence);
+    const offset = i * 4;
+    pixels[offset] = 255;
+    pixels[offset + 1] = 255;
+    pixels[offset + 2] = 255;
+    pixels[offset + 3] = Math.round(smooth * 255);
+  }
+  maskCtx.putImageData(new ImageData(pixels, width, height), 0, 0);
+  renderedMaskVersion = maskImageVersion;
+}
+
+async function ensureSegmenter() {
+  if (backgroundMode.value === 'original') return;
+  await segmenter.ensureReady();
+}
+
+function requestSegmentation(now) {
+  if (backgroundMode.value === 'original' || !cameraStream || cameraVideo.readyState < 2) return;
+  if (segmentBusy || now - lastSegmentAt < 70) return;
+  lastSegmentAt = now;
+  segmentBusy = true;
+
+  Promise.resolve().then(async () => {
+    await ensureSegmenter();
+    segmentationInputCtx.drawImage(cameraVideo, 0, 0, segmentationInput.width, segmentationInput.height);
+    const mask = segmenter.segment(segmentationInput, performance.now());
+    if (mask) {
+      latestMask = mask;
+      maskImageVersion += 1;
+      segmentErrorShown = false;
+    }
+  }).catch((error) => {
+    console.error('Segmentation failed:', error);
+    aiStatus.textContent = 'AI 오류';
+    if (!segmentErrorShown) {
+      setMessage(`AI 배경 처리 오류: ${error.message}`, true);
+      segmentErrorShown = true;
+    }
+  }).finally(() => {
+    segmentBusy = false;
+  });
+}
+
+function drawVirtualCameraBackground(context, width, height) {
+  const mode = backgroundMode.value;
+
+  if (mode === 'image') {
+    if (backgroundImage) {
+      drawCover(context, backgroundImage, 0, 0, width, height);
+    } else {
+      context.fillStyle = '#152238';
+      context.fillRect(0, 0, width, height);
+    }
+    return;
+  }
+
+  if (mode === 'blur') {
+    context.save();
+    context.filter = 'blur(22px) saturate(.9)';
+    const overscan = 28;
+    drawCover(context, cameraVideo, -overscan, -overscan, width + overscan * 2, height + overscan * 2);
+    context.restore();
+    return;
+  }
+
+  context.clearRect(0, 0, width, height);
+}
+
+function buildCameraComposite() {
+  if (!cameraStream || cameraVideo.readyState < 2) return null;
+  resizeCameraWorkCanvases();
+  const width = cameraCompositeCanvas.width;
+  const height = cameraCompositeCanvas.height;
+  const mode = backgroundMode.value;
+
+  cameraCompositeCtx.clearRect(0, 0, width, height);
+
+  if (mode === 'original' || !latestMask) {
+    drawCover(cameraCompositeCtx, cameraVideo, 0, 0, width, height);
+    return cameraCompositeCanvas;
+  }
+
+  updateMaskCanvas();
+  drawVirtualCameraBackground(cameraCompositeCtx, width, height);
+
+  foregroundCtx.clearRect(0, 0, width, height);
+  drawCover(foregroundCtx, cameraVideo, 0, 0, width, height);
+  foregroundCtx.globalCompositeOperation = 'destination-in';
+  foregroundCtx.drawImage(maskCanvas, 0, 0, width, height);
+  foregroundCtx.globalCompositeOperation = 'source-over';
+  cameraCompositeCtx.drawImage(foregroundCanvas, 0, 0);
+
+  return cameraCompositeCanvas;
+}
+
+function clipCameraShape(context, rect) {
+  if (cameraShape.value === 'circle') {
+    const radius = Math.min(rect.width, rect.height) / 2;
+    context.beginPath();
+    context.arc(rect.x + rect.width / 2, rect.y + rect.height / 2, radius, 0, Math.PI * 2);
+    context.clip();
+    return;
+  }
+
+  if (cameraShape.value === 'rectangle') {
+    context.beginPath();
+    context.rect(rect.x, rect.y, rect.width, rect.height);
+    context.clip();
+    return;
+  }
+
+  context.beginPath();
+  context.roundRect(rect.x, rect.y, rect.width, rect.height, 24);
+  context.clip();
+}
+
+function drawCameraInto(rect, fullScreen = false) {
   if (!cameraEnabled.checked || !cameraStream || cameraVideo.readyState < 2) return;
+  const composite = buildCameraComposite();
+  if (!composite) return;
 
-  const rect = cameraRect();
-  const radius = 24;
+  const transparentCutout = backgroundMode.value === 'remove';
+  if (!transparentCutout && !fullScreen) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, .38)';
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+    ctx.fillStyle = '#0f172a';
+    if (cameraShape.value === 'circle') {
+      const radius = Math.min(rect.width, rect.height) / 2 + 4;
+      ctx.beginPath();
+      ctx.arc(rect.x + rect.width / 2, rect.y + rect.height / 2, radius, 0, Math.PI * 2);
+    } else if (cameraShape.value === 'rectangle') {
+      ctx.fillRect(rect.x - 4, rect.y - 4, rect.width + 8, rect.height + 8);
+      ctx.restore();
+      ctx.save();
+      clipCameraShape(ctx, rect);
+      drawCompositeToMain(rect, composite);
+      ctx.restore();
+      return;
+    } else {
+      ctx.beginPath();
+      ctx.roundRect(rect.x - 4, rect.y - 4, rect.width + 8, rect.height + 8, 28);
+    }
+    ctx.fill();
+    ctx.restore();
+  }
 
   ctx.save();
-  ctx.shadowColor = 'rgba(0, 0, 0, .38)';
-  ctx.shadowBlur = 24;
-  ctx.shadowOffsetY = 8;
-  ctx.fillStyle = '#0f172a';
-  ctx.beginPath();
-  ctx.roundRect(rect.x - 4, rect.y - 4, rect.width + 8, rect.height + 8, radius + 4);
-  ctx.fill();
+  if (!fullScreen) clipCameraShape(ctx, rect);
+  drawCompositeToMain(rect, composite);
   ctx.restore();
+}
 
+function drawCompositeToMain(rect, composite) {
   ctx.save();
-  ctx.beginPath();
-  ctx.roundRect(rect.x, rect.y, rect.width, rect.height, radius);
-  ctx.clip();
-
   if (mirrorCamera.checked) {
     ctx.translate(rect.x + rect.width, rect.y);
     ctx.scale(-1, 1);
-    ctx.drawImage(cameraVideo, 0, 0, rect.width, rect.height);
+    drawCover(ctx, composite, 0, 0, rect.width, rect.height);
   } else {
-    ctx.drawImage(cameraVideo, rect.x, rect.y, rect.width, rect.height);
+    drawCover(ctx, composite, rect.x, rect.y, rect.width, rect.height);
   }
   ctx.restore();
 }
 
-function drawLoop() {
+function drawLoop(now = performance.now()) {
   if (!previewActive) return;
+  requestSegmentation(now);
 
-  if (screenVideo.readyState >= 2) {
-    drawVideoContain(screenVideo, 0, 0, canvas.width, canvas.height);
-  } else {
+  if (activeScene === 'camera') {
     ctx.fillStyle = '#020617';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const fullRect = { x: 0, y: 0, width: canvas.width, height: canvas.height };
+    drawCameraInto(fullRect, true);
+  } else {
+    if (screenVideo.readyState >= 2) {
+      drawContain(ctx, screenVideo, 0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    if (activeScene !== 'screen') drawCameraInto(cameraRect());
   }
 
-  drawCamera();
   drawFrameId = requestAnimationFrame(drawLoop);
+}
+
+function resetMicMeter() {
+  if (micMeterFrameId) cancelAnimationFrame(micMeterFrameId);
+  micMeterFrameId = null;
+  micAnalyser = null;
+  micLevelBar.style.width = '0%';
+  micDb.textContent = '-∞ dB';
+}
+
+function startMicMeter() {
+  if (!micAnalyser) return;
+  const data = new Float32Array(micAnalyser.fftSize);
+
+  const tick = () => {
+    if (!micAnalyser) return;
+    micAnalyser.getFloatTimeDomainData(data);
+    let sum = 0;
+    for (const value of data) sum += value * value;
+    const rms = Math.sqrt(sum / data.length);
+    const db = rms > 0 ? 20 * Math.log10(rms) : -Infinity;
+    const normalized = Number.isFinite(db) ? Math.max(0, Math.min(1, (db + 60) / 60)) : 0;
+    micLevelBar.style.width = `${Math.round(normalized * 100)}%`;
+    micDb.textContent = Number.isFinite(db) ? `${Math.round(db)} dB` : '-∞ dB';
+    micMeterFrameId = requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 async function makeAudioMix() {
   audioContext = new AudioContext();
   audioDestination = audioContext.createMediaStreamDestination();
 
-  const connectStream = (stream) => {
-    if (!stream || stream.getAudioTracks().length === 0) return;
-    const source = audioContext.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+  if (displayStream?.getAudioTracks().length) {
+    const source = audioContext.createMediaStreamSource(new MediaStream(displayStream.getAudioTracks()));
     source.connect(audioDestination);
-  };
+  }
 
-  connectStream(displayStream);
-  connectStream(microphoneStream);
+  if (microphoneStream?.getAudioTracks().length) {
+    const micSource = audioContext.createMediaStreamSource(new MediaStream(microphoneStream.getAudioTracks()));
+    micSource.connect(audioDestination);
+    micAnalyser = audioContext.createAnalyser();
+    micAnalyser.fftSize = 512;
+    micAnalyser.smoothingTimeConstant = 0.75;
+    micSource.connect(micAnalyser);
+    startMicMeter();
+  }
 
   if (audioContext.state === 'suspended') await audioContext.resume();
 }
@@ -209,7 +463,9 @@ async function stopPreview() {
   microphoneStream = null;
   screenVideo.srcObject = null;
   cameraVideo.srcObject = null;
+  latestMask = null;
 
+  resetMicMeter();
   if (audioContext) {
     try { await audioContext.close(); } catch { /* already closed */ }
   }
@@ -233,7 +489,6 @@ async function startPreview() {
     video: { frameRate: { ideal: 30, max: 60 } },
     audio: true,
   });
-
   screenVideo.srcObject = displayStream;
   await screenVideo.play();
 
@@ -281,6 +536,13 @@ async function startPreview() {
     });
   }
 
+  if (backgroundMode.value !== 'original') {
+    ensureSegmenter().catch((error) => {
+      console.error(error);
+      setMessage(`AI 배경 모델을 불러오지 못했습니다: ${error.message}`, true);
+    });
+  }
+
   await makeAudioMix();
   previewActive = true;
   emptyPreview.classList.add('hidden');
@@ -312,26 +574,19 @@ async function prepareOutput() {
   if ('showSaveFilePicker' in window) {
     const handle = await window.showSaveFilePicker({
       suggestedName: currentFileName,
-      types: [{
-        description: 'WebM video',
-        accept: { 'video/webm': ['.webm'] },
-      }],
+      types: [{ description: 'WebM video', accept: { 'video/webm': ['.webm'] } }],
     });
     fileWriter = await handle.createWritable();
     currentFileName = handle.name;
     return 'direct';
   }
-
   return 'download';
 }
 
 async function writeChunk(blob) {
   if (!blob || blob.size === 0) return;
-  if (fileWriter) {
-    await fileWriter.write(blob);
-  } else {
-    fallbackChunks.push(blob);
-  }
+  if (fileWriter) await fileWriter.write(blob);
+  else fallbackChunks.push(blob);
 }
 
 async function finishOutput(mimeType) {
@@ -343,15 +598,19 @@ async function finishOutput(mimeType) {
 
   const blob = new Blob(fallbackChunks, { type: mimeType || 'video/webm' });
   fallbackChunks = [];
+  downloadBlob(blob, currentFileName);
+  return currentFileName;
+}
+
+function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = currentFileName;
+  anchor.download = fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  return currentFileName;
 }
 
 async function abortOutput() {
@@ -373,6 +632,40 @@ function beginTimer() {
 function endTimer() {
   if (timerInterval) clearInterval(timerInterval);
   timerInterval = null;
+}
+
+function resetMarkers() {
+  recordingMarkers = [];
+  markerCount.textContent = '0';
+  latestMarker.textContent = '아직 마커 없음';
+}
+
+function addMarker() {
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+  const elapsedMs = Date.now() - recordingStartedAt;
+  const marker = {
+    index: recordingMarkers.length + 1,
+    timeMs: elapsedMs,
+    time: formatTime(elapsedMs),
+    label: `마커 ${recordingMarkers.length + 1}`,
+  };
+  recordingMarkers.push(marker);
+  markerCount.textContent = String(recordingMarkers.length);
+  latestMarker.textContent = `최근 ${marker.time}`;
+  setMessage(`${marker.time}에 마커를 추가했습니다.`);
+}
+
+function exportMarkers(videoFileName) {
+  if (!recordingMarkers.length) return;
+  const markerFileName = videoFileName.replace(/\.webm$/i, '') + '.markers.json';
+  const payload = {
+    format: 'paran-recorder-markers',
+    version: 1,
+    videoFile: videoFileName,
+    createdAt: new Date().toISOString(),
+    markers: recordingMarkers,
+  };
+  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), markerFileName);
 }
 
 async function startRecording() {
@@ -402,6 +695,7 @@ async function startRecording() {
       audioBitsPerSecond: 160_000,
     });
 
+    resetMarkers();
     recordingWriteChain = Promise.resolve();
     mediaRecorder.addEventListener('dataavailable', (event) => {
       if (!event.data || event.data.size === 0) return;
@@ -418,6 +712,7 @@ async function startRecording() {
     beginTimer();
     recordButton.disabled = true;
     stopButton.disabled = false;
+    markerButton.disabled = false;
     previewButton.disabled = true;
     setStatus('● 녹화 중', true);
     setMessage(outputMode === 'direct'
@@ -433,6 +728,7 @@ async function stopRecording() {
   if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
 
   stopButton.disabled = true;
+  markerButton.disabled = true;
   setMessage('녹화를 마무리하고 있습니다...');
   const mimeType = mediaRecorder.mimeType;
 
@@ -443,6 +739,7 @@ async function stopRecording() {
 
   await recordingWriteChain;
   const fileName = await finishOutput(mimeType);
+  exportMarkers(fileName);
   stopTracks(recordingCanvasStream);
   recordingCanvasStream = null;
   mediaRecorder = null;
@@ -451,7 +748,57 @@ async function stopRecording() {
   recordButton.disabled = false;
   previewButton.disabled = false;
   setStatus('미리보기');
-  setMessage(`저장 완료: ${fileName}`);
+  setMessage(`저장 완료: ${fileName}${recordingMarkers.length ? ` · 마커 ${recordingMarkers.length}개` : ''}`);
+}
+
+function applyScene(scene) {
+  activeScene = scene;
+  sceneButtons.forEach((button) => button.classList.toggle('active', button.dataset.scene === scene));
+
+  if (scene === 'screen') {
+    cameraEnabled.checked = false;
+  } else {
+    cameraEnabled.checked = true;
+    if (scene === 'small') cameraSize.value = '24';
+    if (scene === 'large') cameraSize.value = '42';
+    cameraSizeValue.textContent = `${cameraSize.value}%`;
+  }
+}
+
+function setPositionByShortcut(number) {
+  const map = {
+    '1': 'top-left',
+    '2': 'top-right',
+    '3': 'bottom-left',
+    '4': 'bottom-right',
+  };
+  if (map[number]) cameraPosition.value = map[number];
+}
+
+function updateBackgroundControls() {
+  backgroundImageControls.classList.toggle('hidden', backgroundMode.value !== 'image');
+  if (backgroundMode.value !== 'original') {
+    ensureSegmenter().catch((error) => {
+      console.error(error);
+      setMessage(`AI 배경 모델을 불러오지 못했습니다: ${error.message}`, true);
+    });
+  }
+}
+
+function loadBackgroundImage(file) {
+  if (!file) return;
+  if (backgroundImageUrl) URL.revokeObjectURL(backgroundImageUrl);
+  backgroundImageUrl = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    backgroundImage = image;
+    backgroundImageName.textContent = file.name;
+    backgroundMode.value = 'image';
+    updateBackgroundControls();
+    setMessage(`가상 배경 이미지를 불러왔습니다: ${file.name}`);
+  };
+  image.onerror = () => setMessage('배경 이미지를 불러오지 못했습니다.', true);
+  image.src = backgroundImageUrl;
 }
 
 async function guarded(action) {
@@ -467,13 +814,47 @@ async function guarded(action) {
 previewButton.addEventListener('click', () => guarded(startPreview));
 recordButton.addEventListener('click', () => guarded(startRecording));
 stopButton.addEventListener('click', () => guarded(stopRecording));
+markerButton.addEventListener('click', addMarker);
 refreshDevicesButton.addEventListener('click', () => guarded(() => refreshDevices(true)));
+sceneButtons.forEach((button) => button.addEventListener('click', () => applyScene(button.dataset.scene)));
 cameraSize.addEventListener('input', () => { cameraSizeValue.textContent = `${cameraSize.value}%`; });
+backgroundMode.addEventListener('change', updateBackgroundControls);
+backgroundImageInput.addEventListener('change', () => loadBackgroundImage(backgroundImageInput.files?.[0]));
+
+cameraEnabled.addEventListener('change', () => {
+  if (!cameraEnabled.checked && activeScene !== 'screen') applyScene('screen');
+  if (cameraEnabled.checked && activeScene === 'screen') applyScene('small');
+});
+
+window.addEventListener('keydown', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
+
+  const sceneMap = { F1: 'screen', F2: 'small', F3: 'large', F4: 'camera' };
+  if (sceneMap[event.key]) {
+    event.preventDefault();
+    applyScene(sceneMap[event.key]);
+    return;
+  }
+
+  if (event.key.toLowerCase() === 'm') {
+    event.preventDefault();
+    addMarker();
+    return;
+  }
+
+  if (event.ctrlKey && ['1', '2', '3', '4'].includes(event.key)) {
+    event.preventDefault();
+    setPositionByShortcut(event.key);
+  }
+});
 
 window.addEventListener('beforeunload', () => {
   stopTracks(displayStream);
   stopTracks(cameraStream);
   stopTracks(microphoneStream);
+  segmenter.close();
+  if (backgroundImageUrl) URL.revokeObjectURL(backgroundImageUrl);
 });
 
 runtimeLabel.textContent = isTauri ? 'TAURI 개발판' : 'WEB 개발판';
@@ -485,5 +866,7 @@ saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이�
     setMessage('화면·카메라 녹화를 위해 HTTPS 환경이 필요합니다.', true);
     return;
   }
+  applyScene('small');
+  updateBackgroundControls();
   await guarded(() => refreshDevices(true));
 })();
