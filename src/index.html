@@ -105,21 +105,45 @@
           </select>
         </label>
 
-        <label class="field">
-          <span>AI 배경 엔진</span>
-          <select id="aiEngineSelect">
-            <option value="mediapipe">빠른 모드 · MediaPipe</option>
-            <option value="reference" selected>실시간 · 배경 기준 (실험)</option>
-            <option value="modnet">최고품질 · 배경 기준 (느림)</option>
-          </select>
-        </label>
-
-        <div id="backgroundReferenceControls" class="info-box field-note">
-          <strong>배경 기준 방식</strong>
-          <span>배경 기준 모드에서는 사람이 화면에서 잠깐 벗어난 뒤 빈 배경을 한 번 촬영합니다. 저장된 배경은 다음 실행에서도 재사용합니다.</span>
-          <button id="backgroundReferenceButton" class="button subtle full" type="button">빈 배경 촬영</button>
-          <span id="backgroundReferenceStatus">미리보기 시작 → 배경 기준 모드 선택 → 사람이 비킨 상태에서 촬영</span>
+        <div class="info-box field-note ai-engine-note">
+          <strong>AI 배경 제거 · MediaPipe</strong>
+          <span>빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.</span>
         </div>
+
+        <details id="mediaPipeAdvanced" class="advanced-settings">
+          <summary>
+            <span>MediaPipe 고급 설정</span>
+            <small id="aiPresetLabel">균형</small>
+          </summary>
+
+          <div class="advanced-body">
+            <div class="preset-row" aria-label="AI 프리셋">
+              <button class="preset-button active" type="button" data-ai-preset="balanced">균형</button>
+              <button class="preset-button" type="button" data-ai-preset="motion">빠른 움직임</button>
+              <button class="preset-button" type="button" data-ai-preset="edge">경계 우선</button>
+            </div>
+
+            <label class="field compact-field">
+              <span class="range-title">움직임 추종 <b id="aiTrackingValue">70</b></span>
+              <input id="aiTracking" type="range" min="0" max="100" value="70">
+              <small>높일수록 빠른 움직임을 잘 따라오지만 처리량이 늘어납니다.</small>
+            </label>
+
+            <label class="field compact-field">
+              <span class="range-title">경계 정리 <b id="aiCleanupValue">55</b></span>
+              <input id="aiCleanup" type="range" min="0" max="100" value="55">
+              <small>높일수록 배경 찌꺼기가 줄지만 머리카락 끝이 조금 잘릴 수 있습니다.</small>
+            </label>
+
+            <label class="field compact-field">
+              <span class="range-title">머리·안경 보존 <b id="aiPreserveValue">60</b></span>
+              <input id="aiPreserve" type="range" min="0" max="100" value="60">
+              <small>높일수록 안경·머리카락 주변을 더 넉넉하게 남깁니다.</small>
+            </label>
+
+            <button id="aiResetButton" class="button subtle full" type="button">기본값 복원</button>
+          </div>
+        </details>
 
         <div id="backgroundImageControls" class="upload-row hidden">
           <label class="button subtle upload-button" for="backgroundImageInput">이미지 선택</label>
