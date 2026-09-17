@@ -1,7 +1,7 @@
 import * as ort from 'onnxruntime-web/webgpu';
 
 const ORT_VERSION = '1.30.0';
-const MODEL_URL = 'https://github.com/yakhyo/modnet/releases/download/weights/modnet_webcam.onnx';
+const MODEL_URL = 'https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx';
 const REF_SIZE = 512;
 const SIZE_DIVISIBILITY = 32;
 
@@ -74,7 +74,7 @@ export class ModNetEngine {
   }
 
   async #initialize() {
-    this.onStatus('MODNet Webcam 모델 불러오는 중');
+    this.onStatus('MODNet 모델 불러오는 중');
 
     const commonOptions = {
       graphOptimizationLevel: 'all',
@@ -89,12 +89,12 @@ export class ModNetEngine {
         });
         this.delegate = 'WebGPU';
       } catch (gpuError) {
-        console.warn('MODNet Webcam WebGPU initialization failed. Falling back to WASM.', gpuError);
+        console.warn('MODNet WebGPU initialization failed. Falling back to WASM.', gpuError);
       }
     }
 
     if (!this.session) {
-      this.onStatus('MODNet Webcam CPU 모드 준비 중');
+      this.onStatus('MODNet CPU 모드 준비 중');
       this.session = await ort.InferenceSession.create(MODEL_URL, {
         ...commonOptions,
         executionProviders: ['wasm'],
@@ -104,7 +104,7 @@ export class ModNetEngine {
 
     this.inputName = this.session.inputNames?.[0] || 'input';
     this.outputName = this.session.outputNames?.[0] || 'output';
-    this.onStatus(`AI 준비 · MODNet Webcam ${this.delegate}`);
+    this.onStatus(`AI 준비 · MODNet ${this.delegate}`);
     return this.session;
   }
 
@@ -160,7 +160,7 @@ export class ModNetEngine {
     const inputTensor = this.#preprocess(imageSource);
     const results = await this.session.run({ [this.inputName]: inputTensor });
     const output = results[this.outputName] || Object.values(results)[0];
-    if (!output?.data) throw new Error('MODNet Webcam 출력 마스크를 받지 못했습니다.');
+    if (!output?.data) throw new Error('MODNet 출력 마스크를 받지 못했습니다.');
 
     const dims = output.dims || [];
     const height = Number(dims[dims.length - 2]) || this.inputHeight;
@@ -181,7 +181,7 @@ export class ModNetEngine {
 
     this.previousMask = rawAlpha;
     this.latestMask = { width, height, data };
-    this.onStatus(`AI 준비 · MODNet Webcam ${this.delegate} · ${width}×${height}`);
+    this.onStatus(`AI 준비 · MODNet ${this.delegate} · ${width}×${height}`);
   }
 
   segment(imageSource) {
@@ -197,7 +197,7 @@ export class ModNetEngine {
       this.busy = true;
       this.#run(imageSource)
         .catch((error) => {
-          this.pendingError = new Error(`MODNet Webcam 처리 실패: ${errorText(error)}`);
+          this.pendingError = new Error(`MODNet 처리 실패: ${errorText(error)}`);
           this.onStatus('AI 오류');
         })
         .finally(() => {
