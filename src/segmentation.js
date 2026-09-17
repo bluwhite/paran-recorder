@@ -299,7 +299,13 @@ export class PersonSegmenter {
   }
 
   segment(imageSource, timestampMs = performance.now()) {
-    return this.#getEngine().segment(imageSource, timestampMs);
+    const engine = this.#getEngine();
+    if (this.engineMode === 'modnet') {
+      const cameraVideo = document.getElementById('cameraVideo');
+      const originalSource = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
+      return engine.segment(originalSource, timestampMs);
+    }
+    return engine.segment(imageSource, timestampMs);
   }
 
   close() {
