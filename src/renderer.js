@@ -1,11 +1,8 @@
-const api = window.paranRecorder;
-
 const canvas = document.getElementById('previewCanvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 const screenVideo = document.getElementById('screenVideo');
 const cameraVideo = document.getElementById('cameraVideo');
 const emptyPreview = document.getElementById('emptyPreview');
-const sourceSelect = document.getElementById('sourceSelect');
 const cameraSelect = document.getElementById('cameraSelect');
 const microphoneSelect = document.getElementById('microphoneSelect');
 const cameraEnabled = document.getElementById('cameraEnabled');
@@ -16,12 +13,13 @@ const mirrorCamera = document.getElementById('mirrorCamera');
 const previewButton = document.getElementById('previewButton');
 const recordButton = document.getElementById('recordButton');
 const stopButton = document.getElementById('stopButton');
-const refreshSourcesButton = document.getElementById('refreshSourcesButton');
 const refreshDevicesButton = document.getElementById('refreshDevicesButton');
 const message = document.getElementById('message');
 const statusBadge = document.getElementById('statusBadge');
 const recordingTimer = document.getElementById('recordingTimer');
 const systemAudioInfo = document.getElementById('systemAudioInfo');
+const saveModeInfo = document.getElementById('saveModeInfo');
+const runtimeLabel = document.getElementById('runtimeLabel');
 
 let displayStream = null;
 let cameraStream = null;
@@ -31,10 +29,15 @@ let audioDestination = null;
 let drawFrameId = null;
 let mediaRecorder = null;
 let recordingCanvasStream = null;
-let recordingWriteChain = Promise.resolve();
 let recordingStartedAt = 0;
 let timerInterval = null;
 let previewActive = false;
+let fileWriter = null;
+let fallbackChunks = [];
+let recordingWriteChain = Promise.resolve();
+let currentFileName = '';
+
+const isTauri = Boolean(window.__TAURI_INTERNALS__);
 
 function setMessage(text, isError = false) {
   message.textContent = text || '';
@@ -71,14 +74,12 @@ function fillSelect(select, devices, fallbackText) {
   select.innerHTML = '';
 
   if (!devices.length) {
-    const option = new Option(fallbackText, '');
-    select.add(option);
+    select.add(new Option(`${fallbackText} 없음`, ''));
     return;
   }
 
   devices.forEach((device, index) => {
-    const label = device.label || `${fallbackText} ${index + 1}`;
-    select.add(new Option(label, device.deviceId));
+    select.add(new Option(device.label || `${fallbackText} ${index + 1}`, device.deviceId));
   });
 
   if ([...select.options].some((option) => option.value === previous)) {
@@ -86,39 +87,14 @@ function fillSelect(select, devices, fallbackText) {
   }
 }
 
-async function refreshSources() {
-  try {
-    const sources = await api.listDesktopSources();
-    const previous = sourceSelect.value;
-    sourceSelect.innerHTML = '';
-
-    sources.forEach((source) => {
-      sourceSelect.add(new Option(source.name, source.id));
-    });
-
-    if ([...sourceSelect.options].some((option) => option.value === previous)) {
-      sourceSelect.value = previous;
-    }
-
-    if (!sources.length) setMessage('녹화할 화면을 찾지 못했습니다.', true);
-  } catch (error) {
-    console.error(error);
-    setMessage(`화면 목록을 가져오지 못했습니다: ${error.message}`, true);
-  }
-}
-
 async function refreshDevices(requestPermission = true) {
   let permissionStream = null;
+
   if (requestPermission) {
     try {
       permissionStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     } catch (error) {
-      console.warn('Combined media permission request failed:', error);
-      try {
-        permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch {
-        // Device lists below can still show whatever the OS exposes.
-      }
+      console.warn('Camera/microphone permission request:', error);
     } finally {
       stopTracks(permissionStream);
     }
@@ -241,21 +217,23 @@ async function stopPreview() {
   audioDestination = null;
 
   recordButton.disabled = true;
-  previewButton.textContent = '▶ 미리보기 시작';
+  previewButton.textContent = '▶ 화면 선택 · 미리보기';
   emptyPreview.classList.remove('hidden');
   setStatus('준비');
 }
 
 async function startPreview() {
-  if (!sourceSelect.value) throw new Error('녹화할 화면을 선택하세요.');
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error('이 브라우저는 화면 공유 녹화를 지원하지 않습니다. 최신 Chrome 또는 Edge를 사용하세요.');
+  }
 
   await stopPreview();
-  await api.selectDesktopSource(sourceSelect.value);
 
   displayStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: 30 },
-    audio: api.platform === 'win32',
+    video: { frameRate: { ideal: 30, max: 60 } },
+    audio: true,
   });
+
   screenVideo.srcObject = displayStream;
   await screenVideo.play();
 
@@ -306,10 +284,14 @@ async function startPreview() {
   await makeAudioMix();
   previewActive = true;
   emptyPreview.classList.add('hidden');
-  previewButton.textContent = '↻ 미리보기 다시 시작';
+  previewButton.textContent = '↻ 화면 다시 선택';
   recordButton.disabled = false;
   setStatus('미리보기');
-  setMessage('미리보기가 시작되었습니다. 화면 구성을 확인한 뒤 녹화를 시작하세요.');
+
+  const hasSystemAudio = displayStream.getAudioTracks().length > 0;
+  setMessage(hasSystemAudio
+    ? '미리보기가 시작되었습니다. 공유 화면의 소리도 감지되었습니다.'
+    : '미리보기가 시작되었습니다. 시스템 소리는 현재 공유되지 않고 있습니다.');
   drawLoop();
 }
 
@@ -320,6 +302,64 @@ function chooseMimeType() {
     'video/webm',
   ];
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+async function prepareOutput() {
+  currentFileName = defaultFileName();
+  fallbackChunks = [];
+  fileWriter = null;
+
+  if ('showSaveFilePicker' in window) {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: currentFileName,
+      types: [{
+        description: 'WebM video',
+        accept: { 'video/webm': ['.webm'] },
+      }],
+    });
+    fileWriter = await handle.createWritable();
+    currentFileName = handle.name;
+    return 'direct';
+  }
+
+  return 'download';
+}
+
+async function writeChunk(blob) {
+  if (!blob || blob.size === 0) return;
+  if (fileWriter) {
+    await fileWriter.write(blob);
+  } else {
+    fallbackChunks.push(blob);
+  }
+}
+
+async function finishOutput(mimeType) {
+  if (fileWriter) {
+    await fileWriter.close();
+    fileWriter = null;
+    return currentFileName;
+  }
+
+  const blob = new Blob(fallbackChunks, { type: mimeType || 'video/webm' });
+  fallbackChunks = [];
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = currentFileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return currentFileName;
+}
+
+async function abortOutput() {
+  fallbackChunks = [];
+  if (fileWriter) {
+    try { await fileWriter.abort(); } catch { /* best effort */ }
+  }
+  fileWriter = null;
 }
 
 function beginTimer() {
@@ -338,10 +378,15 @@ function endTimer() {
 async function startRecording() {
   if (!previewActive) await startPreview();
 
-  const fileResult = await api.beginRecording(defaultFileName());
-  if (fileResult.canceled) {
-    setMessage('녹화가 취소되었습니다.');
-    return;
+  let outputMode;
+  try {
+    outputMode = await prepareOutput();
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      setMessage('파일 저장 선택이 취소되었습니다.');
+      return;
+    }
+    throw error;
   }
 
   try {
@@ -360,16 +405,13 @@ async function startRecording() {
     recordingWriteChain = Promise.resolve();
     mediaRecorder.addEventListener('dataavailable', (event) => {
       if (!event.data || event.data.size === 0) return;
-      recordingWriteChain = recordingWriteChain.then(async () => {
-        const buffer = await event.data.arrayBuffer();
-        await api.writeRecordingChunk(buffer);
-      });
+      recordingWriteChain = recordingWriteChain.then(() => writeChunk(event.data));
     });
 
     mediaRecorder.addEventListener('error', async (event) => {
       console.error('MediaRecorder error:', event.error);
       setMessage(`녹화 오류: ${event.error?.message || '알 수 없는 오류'}`, true);
-      await api.abortRecording();
+      await abortOutput();
     });
 
     mediaRecorder.start(1000);
@@ -378,9 +420,11 @@ async function startRecording() {
     stopButton.disabled = false;
     previewButton.disabled = true;
     setStatus('● 녹화 중', true);
-    setMessage(`녹화 중 · ${fileResult.filePath}`);
+    setMessage(outputMode === 'direct'
+      ? `녹화 중 · ${currentFileName}에 직접 기록합니다.`
+      : '녹화 중 · 종료하면 WebM 파일을 다운로드합니다.');
   } catch (error) {
-    await api.abortRecording();
+    await abortOutput();
     throw error;
   }
 }
@@ -390,6 +434,7 @@ async function stopRecording() {
 
   stopButton.disabled = true;
   setMessage('녹화를 마무리하고 있습니다...');
+  const mimeType = mediaRecorder.mimeType;
 
   await new Promise((resolve) => {
     mediaRecorder.addEventListener('stop', resolve, { once: true });
@@ -397,7 +442,7 @@ async function stopRecording() {
   });
 
   await recordingWriteChain;
-  const result = await api.finishRecording();
+  const fileName = await finishOutput(mimeType);
   stopTracks(recordingCanvasStream);
   recordingCanvasStream = null;
   mediaRecorder = null;
@@ -406,7 +451,7 @@ async function stopRecording() {
   recordButton.disabled = false;
   previewButton.disabled = false;
   setStatus('미리보기');
-  setMessage(`저장 완료: ${result.filePath}`);
+  setMessage(`저장 완료: ${fileName}`);
 }
 
 async function guarded(action) {
@@ -422,7 +467,6 @@ async function guarded(action) {
 previewButton.addEventListener('click', () => guarded(startPreview));
 recordButton.addEventListener('click', () => guarded(startRecording));
 stopButton.addEventListener('click', () => guarded(stopRecording));
-refreshSourcesButton.addEventListener('click', () => guarded(refreshSources));
 refreshDevicesButton.addEventListener('click', () => guarded(() => refreshDevices(true)));
 cameraSize.addEventListener('input', () => { cameraSizeValue.textContent = `${cameraSize.value}%`; });
 
@@ -432,11 +476,14 @@ window.addEventListener('beforeunload', () => {
   stopTracks(microphoneStream);
 });
 
-systemAudioInfo.textContent = api.platform === 'win32'
-  ? 'Windows에서는 화면의 시스템 소리도 함께 섞어 녹음합니다.'
-  : '현재 v0.1의 시스템 소리 자동 녹음은 Windows 우선 지원입니다.';
+runtimeLabel.textContent = isTauri ? 'TAURI 개발판' : 'WEB 개발판';
+systemAudioInfo.textContent = '시스템 소리는 화면 선택 창에서 오디오 공유를 켠 경우 함께 녹음됩니다.';
+saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이터를 파일에 바로 기록합니다.';
 
 (async () => {
-  await guarded(refreshSources);
+  if (!window.isSecureContext && location.hostname !== 'localhost') {
+    setMessage('화면·카메라 녹화를 위해 HTTPS 환경이 필요합니다.', true);
+    return;
+  }
   await guarded(() => refreshDevices(true));
 })();
