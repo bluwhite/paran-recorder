@@ -6,7 +6,6 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; img-src 'self' data: blob:; media-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:">
   <title>Paran Recorder</title>
   <link rel="stylesheet" href="./styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/selfie_segmentation.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <header class="app-header">
@@ -103,6 +102,14 @@
             <option value="image">다른 이미지로 교체</option>
             <option value="blur">배경 흐림</option>
             <option value="remove">배경 제거</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>AI 배경 엔진</span>
+          <select id="aiEngineSelect">
+            <option value="mediapipe">빠른 모드 · MediaPipe</option>
+            <option value="modnet">고품질 모드 · MODNet (실험)</option>
           </select>
         </label>
 
