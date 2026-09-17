@@ -1,5 +1,6 @@
 const MAX_INPUT_WIDTH = 320;
 const MIN_IDLE_AFTER_INFERENCE_MS = 80;
+const REFERENCE_STORAGE_KEY = 'paran-recorder-background-reference-v1';
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -23,6 +24,15 @@ function targetSize(imageSource) {
   };
 }
 
+function snapshotCanvas(imageSource, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { alpha: false });
+  context.drawImage(imageSource, 0, 0, width, height);
+  return canvas;
+}
+
 async function makeBitmap(imageSource, width, height) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || width;
   const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || height;
@@ -37,13 +47,46 @@ async function makeBitmap(imageSource, width, height) {
       { resizeWidth: width, resizeHeight: height, resizeQuality: 'medium' },
     );
   } catch {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d', { alpha: false });
-    context.drawImage(imageSource, 0, 0, width, height);
-    return createImageBitmap(canvas);
+    return createImageBitmap(snapshotCanvas(imageSource, width, height));
   }
+}
+
+function loadStoredReference() {
+  try {
+    const stored = localStorage.getItem(REFERENCE_STORAGE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    if (!parsed?.dataUrl || !parsed?.width || !parsed?.height) return null;
+    return parsed;
+  } catch (error) {
+    console.warn('Saved background reference could not be read.', error);
+    return null;
+  }
+}
+
+function saveStoredReference(dataUrl, width, height) {
+  try {
+    localStorage.setItem(REFERENCE_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      dataUrl,
+      width,
+      height,
+      savedAt: new Date().toISOString(),
+    }));
+  } catch (error) {
+    console.warn('Background reference could not be persisted.', error);
+  }
+}
+
+async function bitmapFromDataUrl(dataUrl, width, height) {
+  const image = new Image();
+  image.src = dataUrl;
+  if (image.decode) await image.decode();
+  else await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+  });
+  return makeBitmap(image, width, height);
 }
 
 export class BackgroundMattingV2Engine {
@@ -57,6 +100,7 @@ export class BackgroundMattingV2Engine {
     this.busy = false;
     this.pendingError = null;
     this.referenceReady = false;
+    this.referenceSource = '';
     this.width = 0;
     this.height = 0;
     this.lastRunFinishedAt = 0;
@@ -123,16 +167,48 @@ export class BackgroundMattingV2Engine {
     await this.#request('init');
     this.ready = true;
     this.delegate = 'WASM Worker · 균형';
+    await this.#restoreStoredReference();
     this.#updateStatus();
     return true;
   }
 
+  async #restoreStoredReference() {
+    const saved = loadStoredReference();
+    if (!saved) return false;
+
+    try {
+      const width = Number(saved.width);
+      const height = Number(saved.height);
+      const bitmap = await bitmapFromDataUrl(saved.dataUrl, width, height);
+      await this.#request('capture', { bitmap, width, height }, [bitmap]);
+      this.width = width;
+      this.height = height;
+      this.referenceReady = true;
+      this.referenceSource = 'saved';
+      this.latestMask = null;
+      this.lastRunFinishedAt = 0;
+      return true;
+    } catch (error) {
+      console.warn('Saved background reference could not be restored.', error);
+      return false;
+    }
+  }
+
   #updateStatus() {
     if (!this.ready) return;
+    const referenceStatus = document.getElementById('backgroundReferenceStatus');
+
     if (!this.referenceReady) {
       this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · 배경 촬영 필요`);
-    } else {
-      this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · ${this.width}×${this.height}`);
+      return;
+    }
+
+    const sourceText = this.referenceSource === 'saved' ? '저장 배경 재사용' : '배경 저장 완료';
+    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · ${sourceText}`);
+    if (referenceStatus) {
+      referenceStatus.textContent = this.referenceSource === 'saved'
+        ? `저장된 빈 배경 재사용 중 · ${this.width}×${this.height}`
+        : `빈 배경 저장 완료 · ${this.width}×${this.height} · 다음 촬영까지 재사용`;
     }
   }
 
@@ -143,12 +219,16 @@ export class BackgroundMattingV2Engine {
 
     await this.ensureReady();
     const { width, height } = targetSize(imageSource);
-    const bitmap = await makeBitmap(imageSource, width, height);
+    const canvas = snapshotCanvas(imageSource, width, height);
+    const dataUrl = canvas.toDataURL('image/webp', 0.92);
+    const bitmap = await createImageBitmap(canvas);
     await this.#request('capture', { bitmap, width, height }, [bitmap]);
+    saveStoredReference(dataUrl, width, height);
 
     this.width = width;
     this.height = height;
     this.referenceReady = true;
+    this.referenceSource = 'captured';
     this.latestMask = null;
     this.lastRunFinishedAt = 0;
     this.#updateStatus();
@@ -157,6 +237,7 @@ export class BackgroundMattingV2Engine {
 
   clearBackground() {
     this.referenceReady = false;
+    this.referenceSource = '';
     this.latestMask = null;
     this.lastRunFinishedAt = 0;
     if (this.worker && this.ready) {
@@ -182,7 +263,8 @@ export class BackgroundMattingV2Engine {
 
     const status = document.getElementById('backgroundReferenceStatus');
     if (status) {
-      status.textContent = `빈 배경 저장 완료 · ${this.width}×${this.height} · α ${min}~${max} 평균 ${mean} · ${ms}ms`;
+      const reuse = this.referenceSource === 'saved' ? '저장 배경 재사용' : '다음 촬영까지 재사용';
+      status.textContent = `빈 배경 ${this.width}×${this.height} · ${reuse} · α ${min}~${max} 평균 ${mean} · ${ms}ms`;
     }
   }
 
@@ -236,6 +318,7 @@ export class BackgroundMattingV2Engine {
     this.pendingError = null;
     this.busy = false;
     this.referenceReady = false;
+    this.referenceSource = '';
     this.width = 0;
     this.height = 0;
     this.lastRunFinishedAt = 0;
