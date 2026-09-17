@@ -4,6 +4,9 @@ import { ReferenceBackgroundEngine } from './reference-background-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+const MEDIAPIPE_INTERVAL_MS = 45;
+const MEDIAPIPE_INPUT_WIDTH = 256;
+const MEDIAPIPE_INPUT_HEIGHT = 144;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -150,7 +153,7 @@ function softenMask(binary, width, height, previous) {
       const neighborhood = count / total;
       const current = binary[index]
         ? Math.max(0.78, neighborhood)
-        : (neighborhood >= 0.56 ? neighborhood * 0.30 : 0);
+        : (neighborhood >= 0.60 ? Math.max(0, (neighborhood - 0.50) * 0.65) : 0);
       alpha[index] = previous?.length === binary.length
         ? (current * 0.98) + (previous[index] * 0.02)
         : current;
@@ -171,7 +174,6 @@ function buildForegroundMask(categories, width, height, previous) {
   }
 
   const mainPerson = largestConnectedRegion(core, width, height);
-  const bodyHalo = dilateMask(mainPerson, width, height, 1);
   const headHalo = dilateMask(head, width, height, 5);
   const headInterior = enclosedHeadMask(head, width, height);
   const foreground = new Uint8Array(size);
@@ -183,7 +185,9 @@ function buildForegroundMask(categories, width, height, previous) {
       continue;
     }
 
-    if (category === 5 && (headHalo[i] || bodyHalo[i])) {
+    // Class 5 is useful for glasses and other small facial accessories, but
+    // retaining it around the whole body tends to keep chair/background speckles.
+    if (category === 5 && headHalo[i]) {
       foreground[i] = 1;
       continue;
     }
@@ -202,10 +206,17 @@ class MediaPipePersonSegmenter {
     this.latestMask = null;
     this.previousAlpha = null;
     this.delegate = '';
+    this.realtimeTimer = null;
+    this.realtimeCanvas = null;
+    this.realtimeCtx = null;
+    this.processing = false;
   }
 
   async ensureReady() {
-    if (this.segmenter) return this.segmenter;
+    if (this.segmenter) {
+      this.#startRealtimeLoop();
+      return this.segmenter;
+    }
     if (this.initializing) return this.initializing;
 
     this.initializing = this.#initialize()
@@ -240,38 +251,71 @@ class MediaPipePersonSegmenter {
       this.delegate = 'CPU';
     }
 
-    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate} · 경계/추종 개선`);
+    this.#startRealtimeLoop();
+    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate} · 22fps 추종 개선`);
     return this.segmenter;
   }
 
-  segment(imageSource, timestampMs = performance.now()) {
-    if (!this.segmenter) return this.latestMask;
+  #startRealtimeLoop() {
+    if (this.realtimeTimer) return;
+    if (!this.realtimeCanvas) {
+      this.realtimeCanvas = document.createElement('canvas');
+      this.realtimeCanvas.width = MEDIAPIPE_INPUT_WIDTH;
+      this.realtimeCanvas.height = MEDIAPIPE_INPUT_HEIGHT;
+      this.realtimeCtx = this.realtimeCanvas.getContext('2d', { alpha: false });
+    }
+
+    this.realtimeTimer = setInterval(() => {
+      const cameraVideo = document.getElementById('cameraVideo');
+      if (!this.segmenter || this.processing || !cameraVideo || cameraVideo.readyState < 2) return;
+      this.realtimeCtx.drawImage(cameraVideo, 0, 0, MEDIAPIPE_INPUT_WIDTH, MEDIAPIPE_INPUT_HEIGHT);
+      this.#processFrame(this.realtimeCanvas, performance.now());
+    }, MEDIAPIPE_INTERVAL_MS);
+  }
+
+  #processFrame(imageSource, timestampMs) {
+    if (!this.segmenter || this.processing) return this.latestMask;
+    this.processing = true;
     let copiedMask = null;
 
-    this.segmenter.segmentForVideo(imageSource, timestampMs, (result) => {
-      try {
-        const mask = result.categoryMask;
-        if (!mask) return;
-        const categories = mask.getAsUint8Array();
-        const width = mask.width;
-        const height = mask.height;
-        const alpha = buildForegroundMask(categories, width, height, this.previousAlpha);
-        this.previousAlpha = alpha;
-        copiedMask = { width, height, data: alpha };
-        this.latestMask = copiedMask;
-      } finally {
-        result.close();
-      }
-    });
+    try {
+      this.segmenter.segmentForVideo(imageSource, timestampMs, (result) => {
+        try {
+          const mask = result.categoryMask;
+          if (!mask) return;
+          const categories = mask.getAsUint8Array();
+          const width = mask.width;
+          const height = mask.height;
+          const alpha = buildForegroundMask(categories, width, height, this.previousAlpha);
+          this.previousAlpha = alpha;
+          copiedMask = { width, height, data: alpha };
+          this.latestMask = copiedMask;
+        } finally {
+          result.close();
+        }
+      });
+    } finally {
+      this.processing = false;
+    }
 
     return copiedMask || this.latestMask;
   }
 
+  segment(imageSource, timestampMs = performance.now()) {
+    if (!this.segmenter) return this.latestMask;
+    this.#startRealtimeLoop();
+    if (!this.latestMask) return this.#processFrame(imageSource, timestampMs);
+    return this.latestMask;
+  }
+
   close() {
+    if (this.realtimeTimer) clearInterval(this.realtimeTimer);
+    this.realtimeTimer = null;
     try { this.segmenter?.close(); } catch { /* best effort */ }
     this.segmenter = null;
     this.latestMask = null;
     this.previousAlpha = null;
+    this.processing = false;
     this.onStatus('AI 대기');
   }
 }
