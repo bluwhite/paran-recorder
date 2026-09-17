@@ -1,6 +1,10 @@
 const MAX_INPUT_WIDTH = 320;
 const MIN_IDLE_AFTER_INFERENCE_MS = 80;
-const REFERENCE_STORAGE_KEY = 'paran-recorder-background-reference-v1';
+const REFERENCE_DB_NAME = 'paran-recorder-backgrounds';
+const REFERENCE_DB_VERSION = 1;
+const REFERENCE_STORE = 'references';
+const REFERENCE_ID = 'default';
+const LEGACY_STORAGE_KEY = 'paran-recorder-background-reference-v1';
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -33,6 +37,15 @@ function snapshotCanvas(imageSource, width, height) {
   return canvas;
 }
 
+function canvasToBlob(canvas, type = 'image/png') {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('기준 배경 이미지를 저장할 수 없습니다.'));
+    }, type);
+  });
+}
+
 async function makeBitmap(imageSource, width, height) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || width;
   const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || height;
@@ -51,42 +64,61 @@ async function makeBitmap(imageSource, width, height) {
   }
 }
 
-function loadStoredReference() {
+function openReferenceDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(REFERENCE_DB_NAME, REFERENCE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(REFERENCE_STORE)) {
+        db.createObjectStore(REFERENCE_STORE, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('기준 배경 저장소를 열 수 없습니다.'));
+  });
+}
+
+async function loadStoredReference() {
   try {
-    const stored = localStorage.getItem(REFERENCE_STORAGE_KEY);
-    if (!stored) return null;
-    const parsed = JSON.parse(stored);
-    if (!parsed?.dataUrl || !parsed?.width || !parsed?.height) return null;
-    return parsed;
+    const db = await openReferenceDb();
+    const record = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(REFERENCE_STORE, 'readonly');
+      const request = transaction.objectStore(REFERENCE_STORE).get(REFERENCE_ID);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error('저장된 기준 배경을 읽을 수 없습니다.'));
+    });
+    db.close();
+    return record;
   } catch (error) {
     console.warn('Saved background reference could not be read.', error);
     return null;
   }
 }
 
-function saveStoredReference(dataUrl, width, height) {
+async function saveStoredReference(referenceBuffer, width, height, imageBlob) {
   try {
-    localStorage.setItem(REFERENCE_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      dataUrl,
-      width,
-      height,
-      savedAt: new Date().toISOString(),
-    }));
+    const db = await openReferenceDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(REFERENCE_STORE, 'readwrite');
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('기준 배경을 저장할 수 없습니다.'));
+      transaction.objectStore(REFERENCE_STORE).put({
+        id: REFERENCE_ID,
+        version: 2,
+        width,
+        height,
+        referenceBuffer,
+        imageBlob,
+        savedAt: new Date().toISOString(),
+      });
+    });
+    db.close();
+    try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch { /* best effort */ }
+    return true;
   } catch (error) {
     console.warn('Background reference could not be persisted.', error);
+    return false;
   }
-}
-
-async function bitmapFromDataUrl(dataUrl, width, height) {
-  const image = new Image();
-  image.src = dataUrl;
-  if (image.decode) await image.decode();
-  else await new Promise((resolve, reject) => {
-    image.onload = resolve;
-    image.onerror = reject;
-  });
-  return makeBitmap(image, width, height);
 }
 
 export class BackgroundMattingV2Engine {
@@ -173,14 +205,14 @@ export class BackgroundMattingV2Engine {
   }
 
   async #restoreStoredReference() {
-    const saved = loadStoredReference();
-    if (!saved) return false;
+    const saved = await loadStoredReference();
+    if (!saved?.referenceBuffer || !saved?.width || !saved?.height) return false;
 
     try {
       const width = Number(saved.width);
       const height = Number(saved.height);
-      const bitmap = await bitmapFromDataUrl(saved.dataUrl, width, height);
-      await this.#request('capture', { bitmap, width, height }, [bitmap]);
+      const referenceBuffer = saved.referenceBuffer.slice(0);
+      await this.#request('restore', { referenceBuffer, width, height }, [referenceBuffer]);
       this.width = width;
       this.height = height;
       this.referenceReady = true;
@@ -219,20 +251,27 @@ export class BackgroundMattingV2Engine {
 
     await this.ensureReady();
     const { width, height } = targetSize(imageSource);
-    const canvas = snapshotCanvas(imageSource, width, height);
-    const dataUrl = canvas.toDataURL('image/webp', 0.92);
-    const bitmap = await createImageBitmap(canvas);
-    await this.#request('capture', { bitmap, width, height }, [bitmap]);
-    saveStoredReference(dataUrl, width, height);
+
+    // Keep the model reference on the exact same bitmap/resize path as live frames.
+    const modelBitmap = await makeBitmap(imageSource, width, height);
+    const captureResult = await this.#request('capture', { bitmap: modelBitmap, width, height }, [modelBitmap]);
+    if (!captureResult.referenceBuffer) {
+      throw new Error('기준 배경 데이터를 Worker에서 받지 못했습니다.');
+    }
+
+    // Store a human-viewable lossless image separately from the exact tensor used by the model.
+    const snapshot = snapshotCanvas(imageSource, width, height);
+    const imageBlob = await canvasToBlob(snapshot, 'image/png');
+    const persisted = await saveStoredReference(captureResult.referenceBuffer, width, height, imageBlob);
 
     this.width = width;
     this.height = height;
     this.referenceReady = true;
-    this.referenceSource = 'captured';
+    this.referenceSource = persisted ? 'captured' : 'session';
     this.latestMask = null;
     this.lastRunFinishedAt = 0;
     this.#updateStatus();
-    return { width, height };
+    return { width, height, persisted };
   }
 
   clearBackground() {
@@ -263,7 +302,9 @@ export class BackgroundMattingV2Engine {
 
     const status = document.getElementById('backgroundReferenceStatus');
     if (status) {
-      const reuse = this.referenceSource === 'saved' ? '저장 배경 재사용' : '다음 촬영까지 재사용';
+      const reuse = this.referenceSource === 'saved'
+        ? '저장 배경 재사용'
+        : (this.referenceSource === 'session' ? '현재 세션만 사용' : '다음 촬영까지 재사용');
       status.textContent = `빈 배경 ${this.width}×${this.height} · ${reuse} · α ${min}~${max} 평균 ${mean} · ${ms}ms`;
     }
   }
