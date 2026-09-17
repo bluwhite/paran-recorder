@@ -2,8 +2,8 @@ import * as ort from 'onnxruntime-web/webgpu';
 
 const ORT_VERSION = '1.30.0';
 const MODEL_URL = 'https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx';
-const INPUT_WIDTH = 512;
-const INPUT_HEIGHT = 288;
+const REF_SIZE = 512;
+const SIZE_DIVISIBILITY = 32;
 
 ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 ort.env.wasm.numThreads = 1;
@@ -24,6 +24,19 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
+function roundDown32(value) {
+  return Math.max(SIZE_DIVISIBILITY, Math.floor(value / SIZE_DIVISIBILITY) * SIZE_DIVISIBILITY);
+}
+
+// renderer.js applies smoothstep after mapping [0.12, 0.88] to [0, 1].
+// MODNet already produces a continuous alpha matte, so encode the inverse here
+// to preserve the original matte without changing the shared MediaPipe renderer path.
+function encodeAlphaForSharedRenderer(alpha) {
+  const y = clamp01(alpha);
+  const x = 0.5 - Math.sin(Math.asin(1 - (2 * y)) / 3);
+  return 0.12 + (0.76 * x);
+}
+
 export class ModNetEngine {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
@@ -37,10 +50,10 @@ export class ModNetEngine {
     this.inputName = 'input';
     this.outputName = 'output';
     this.canvas = document.createElement('canvas');
-    this.canvas.width = INPUT_WIDTH;
-    this.canvas.height = INPUT_HEIGHT;
     this.context = this.canvas.getContext('2d', { willReadFrequently: true });
-    this.inputBuffer = new Float32Array(3 * INPUT_WIDTH * INPUT_HEIGHT);
+    this.inputBuffer = null;
+    this.inputWidth = 0;
+    this.inputHeight = 0;
   }
 
   async ensureReady() {
@@ -95,28 +108,41 @@ export class ModNetEngine {
     return this.session;
   }
 
-  #preprocess(imageSource) {
-    const width = INPUT_WIDTH;
-    const height = INPUT_HEIGHT;
-    const sourceWidth = imageSource.videoWidth || imageSource.width || width;
-    const sourceHeight = imageSource.videoHeight || imageSource.height || height;
-    const sourceRatio = sourceWidth / sourceHeight;
-    const targetRatio = width / height;
+  #targetSize(imageSource) {
+    const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
+    const sourceHeight = imageSource.videoHeight || imageSource.naturalHeight || imageSource.height || 720;
 
-    let sx = 0;
-    let sy = 0;
-    let sw = sourceWidth;
-    let sh = sourceHeight;
-
-    if (sourceRatio > targetRatio) {
-      sw = sourceHeight * targetRatio;
-      sx = (sourceWidth - sw) / 2;
-    } else if (sourceRatio < targetRatio) {
-      sh = sourceWidth / targetRatio;
-      sy = (sourceHeight - sh) / 2;
+    if (sourceWidth >= sourceHeight) {
+      return {
+        height: REF_SIZE,
+        width: roundDown32((sourceWidth / sourceHeight) * REF_SIZE),
+      };
     }
 
-    this.context.drawImage(imageSource, sx, sy, sw, sh, 0, 0, width, height);
+    return {
+      width: REF_SIZE,
+      height: roundDown32((sourceHeight / sourceWidth) * REF_SIZE),
+    };
+  }
+
+  #prepareBuffers(width, height) {
+    if (this.inputWidth === width && this.inputHeight === height && this.inputBuffer) return;
+    this.inputWidth = width;
+    this.inputHeight = height;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.inputBuffer = new Float32Array(3 * width * height);
+  }
+
+  #preprocess(imageSource) {
+    const { width, height } = this.#targetSize(imageSource);
+    this.#prepareBuffers(width, height);
+
+    // MODNet reference preprocessing keeps the source aspect ratio, resizes the
+    // shorter side to 512, and makes both dimensions divisible by 32.
+    this.context.clearRect(0, 0, width, height);
+    this.context.drawImage(imageSource, 0, 0, width, height);
+
     const pixels = this.context.getImageData(0, 0, width, height).data;
     const plane = width * height;
     const input = this.inputBuffer;
@@ -137,22 +163,25 @@ export class ModNetEngine {
     if (!output?.data) throw new Error('MODNet 출력 마스크를 받지 못했습니다.');
 
     const dims = output.dims || [];
-    const height = Number(dims[dims.length - 2]) || INPUT_HEIGHT;
-    const width = Number(dims[dims.length - 1]) || INPUT_WIDTH;
+    const height = Number(dims[dims.length - 2]) || this.inputHeight;
+    const width = Number(dims[dims.length - 1]) || this.inputWidth;
     const size = width * height;
     const data = new Float32Array(size);
     const source = output.data;
     const previous = this.previousMask?.length === size ? this.previousMask : null;
+    const rawAlpha = new Float32Array(size);
 
     for (let i = 0; i < size; i += 1) {
       const current = clamp01(Number(source[i]));
-      // MODNet already outputs an alpha matte. Keep only very light temporal smoothing
-      // so hair/glasses edges remain stable without creating visible motion trails.
-      data[i] = previous ? (current * 0.94) + (previous[i] * 0.06) : current;
+      // Keep temporal smoothing extremely light. MODNet is an image matting model,
+      // and stronger smoothing visibly trails when the lecturer moves.
+      rawAlpha[i] = previous ? (current * 0.98) + (previous[i] * 0.02) : current;
+      data[i] = encodeAlphaForSharedRenderer(rawAlpha[i]);
     }
 
-    this.previousMask = data;
+    this.previousMask = rawAlpha;
     this.latestMask = { width, height, data };
+    this.onStatus(`AI 준비 · MODNet ${this.delegate} · ${width}×${height}`);
   }
 
   segment(imageSource) {
@@ -186,6 +215,9 @@ export class ModNetEngine {
     this.previousMask = null;
     this.pendingError = null;
     this.busy = false;
+    this.inputBuffer = null;
+    this.inputWidth = 0;
+    this.inputHeight = 0;
     if (session?.release) {
       Promise.resolve(session.release()).catch(() => {});
     }
