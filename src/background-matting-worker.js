@@ -141,6 +141,26 @@ self.addEventListener('message', async (event) => {
       prepareSize(event.data.width, event.data.height);
       preprocessBitmap(event.data.bitmap, referenceBuffer);
       previousAlpha = null;
+      const persistedReference = referenceBuffer.slice();
+      self.postMessage({
+        id,
+        ok: true,
+        width,
+        height,
+        referenceBuffer: persistedReference.buffer,
+      }, [persistedReference.buffer]);
+      return;
+    }
+
+    if (type === 'restore') {
+      await ensureSession();
+      prepareSize(event.data.width, event.data.height);
+      const restored = new Float32Array(event.data.referenceBuffer);
+      if (restored.length !== referenceBuffer.length) {
+        throw new Error('저장된 배경 기준 데이터의 크기가 맞지 않습니다.');
+      }
+      referenceBuffer.set(restored);
+      previousAlpha = null;
       self.postMessage({ id, ok: true, width, height });
       return;
     }
