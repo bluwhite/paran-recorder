@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web/webgpu';
+import * as ort from 'onnxruntime-web';
 
 const ORT_VERSION = '1.30.0';
 const MODEL_URL = 'https://huggingface.co/onnx-community/BackgroundMattingV2-hd/resolve/main/onnx/model.onnx';
@@ -61,6 +61,7 @@ export class BackgroundMattingV2Engine {
     this.previousAlpha = null;
     this.busy = false;
     this.pendingError = null;
+    this.lastDiagnosticsAt = 0;
 
     this.width = 0;
     this.height = 0;
@@ -91,32 +92,17 @@ export class BackgroundMattingV2Engine {
   }
 
   async #initialize() {
-    this.onStatus('배경 기준 AI 모델 불러오는 중');
-    const commonOptions = {
+    // The official BackgroundMattingV2 ONNX graph uses ROIAlign and
+    // ScatterElements. ORT Web's WASM backend supports the full ONNX operator
+    // set, while WebGPU supports only a subset, so use WASM first to validate
+    // correctness before attempting GPU acceleration.
+    this.onStatus('배경 기준 AI WASM 모델 불러오는 중');
+    this.session = await ort.InferenceSession.create(MODEL_URL, {
       graphOptimizationLevel: 'all',
       executionMode: 'sequential',
-    };
-
-    if (navigator.gpu) {
-      try {
-        this.session = await ort.InferenceSession.create(MODEL_URL, {
-          ...commonOptions,
-          executionProviders: ['webgpu'],
-        });
-        this.delegate = 'WebGPU';
-      } catch (gpuError) {
-        console.warn('BackgroundMattingV2 WebGPU initialization failed. Falling back to WASM.', gpuError);
-      }
-    }
-
-    if (!this.session) {
-      this.onStatus('배경 기준 AI CPU 모드 준비 중');
-      this.session = await ort.InferenceSession.create(MODEL_URL, {
-        ...commonOptions,
-        executionProviders: ['wasm'],
-      });
-      this.delegate = 'WASM';
-    }
+      executionProviders: ['wasm'],
+    });
+    this.delegate = 'WASM';
 
     this.#updateStatus();
     return this.session;
@@ -180,6 +166,22 @@ export class BackgroundMattingV2Engine {
     rgbaToRgbTensorData(pixels, width, height, this.sourceBuffer);
   }
 
+  #reportDiagnostics(minAlpha, maxAlpha, meanAlpha) {
+    const now = performance.now();
+    if (now - this.lastDiagnosticsAt < 750) return;
+    this.lastDiagnosticsAt = now;
+
+    const min = minAlpha.toFixed(2);
+    const max = maxAlpha.toFixed(2);
+    const mean = meanAlpha.toFixed(2);
+    this.onStatus(`AI 준비 · 배경 기준 ${this.delegate} · α ${min}~${max} 평균 ${mean}`);
+
+    const status = document.getElementById('backgroundReferenceStatus');
+    if (status) {
+      status.textContent = `빈 배경 저장 완료 · ${this.width}×${this.height} · α ${min}~${max} 평균 ${mean}`;
+    }
+  }
+
   async #run(imageSource) {
     if (!this.referenceReady) return;
     this.#preprocessSource(imageSource);
@@ -201,17 +203,23 @@ export class BackgroundMattingV2Engine {
     const data = new Float32Array(size);
     const rawAlpha = new Float32Array(size);
     const previous = this.previousAlpha?.length === size ? this.previousAlpha : null;
+    let minAlpha = 1;
+    let maxAlpha = 0;
+    let sumAlpha = 0;
 
     for (let i = 0; i < size; i += 1) {
       const current = clamp01(Number(output.data[i]));
       const alpha = previous ? (current * 0.98) + (previous[i] * 0.02) : current;
       rawAlpha[i] = alpha;
       data[i] = encodeAlphaForSharedRenderer(alpha);
+      minAlpha = Math.min(minAlpha, alpha);
+      maxAlpha = Math.max(maxAlpha, alpha);
+      sumAlpha += alpha;
     }
 
     this.previousAlpha = rawAlpha;
     this.latestMask = { width, height, data };
-    this.#updateStatus();
+    this.#reportDiagnostics(minAlpha, maxAlpha, sumAlpha / Math.max(1, size));
   }
 
   segment(imageSource) {
