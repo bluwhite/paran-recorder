@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; img-src 'self' data: blob:; media-src 'self' blob:; script-src 'self'; style-src 'self'; connect-src 'self' ws: http: https:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; img-src 'self' data: blob:; media-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' ws: wss: http: https:; worker-src 'self' blob:">
   <title>Paran Recorder</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
@@ -13,7 +13,10 @@
       <div class="eyebrow">PARAN RECORDER · WEB FIRST</div>
       <h1>강의 녹화</h1>
     </div>
-    <div id="statusBadge" class="status-badge">준비</div>
+    <div class="header-status">
+      <span id="aiStatus" class="mini-status">AI 대기</span>
+      <div id="statusBadge" class="status-badge">준비</div>
+    </div>
   </header>
 
   <main class="layout">
@@ -21,7 +24,7 @@
       <div class="panel-title-row">
         <div>
           <h2>녹화 화면</h2>
-          <p>화면과 카메라를 합성한 실제 저장 화면입니다.</p>
+          <p>화면·카메라·가상 배경을 합성한 실제 저장 화면입니다.</p>
         </div>
         <div id="recordingTimer" class="timer">00:00:00</div>
       </div>
@@ -34,80 +37,118 @@
         </div>
       </div>
 
+      <div class="scene-bar" aria-label="장면 프리셋">
+        <button class="scene-button" data-scene="screen">F1 화면만</button>
+        <button class="scene-button active" data-scene="small">F2 작은 얼굴</button>
+        <button class="scene-button" data-scene="large">F3 큰 얼굴</button>
+        <button class="scene-button" data-scene="camera">F4 얼굴만</button>
+      </div>
+
       <div class="primary-actions">
         <button id="previewButton" class="button secondary">▶ 화면 선택 · 미리보기</button>
         <button id="recordButton" class="button record" disabled>● 녹화 시작</button>
+        <button id="markerButton" class="button marker" disabled>◆ 마커 M</button>
         <button id="stopButton" class="button stop" disabled>■ 녹화 종료</button>
+      </div>
+
+      <div class="recording-meta">
+        <span>마커 <b id="markerCount">0</b>개</span>
+        <span id="latestMarker">아직 마커 없음</span>
       </div>
       <div id="message" class="message" aria-live="polite"></div>
     </section>
 
     <aside class="settings-panel panel">
-      <h2>입력 설정</h2>
+      <section class="settings-section">
+        <h2>입력 설정</h2>
+        <div class="info-box field-note">
+          <strong>녹화할 화면</strong>
+          <span>미리보기를 시작할 때 Chrome/Edge에서 모니터·창·탭을 선택합니다.</span>
+        </div>
 
-      <div class="info-box field-note">
-        <strong>녹화할 화면</strong>
-        <span>미리보기를 시작할 때 Chrome/Edge의 화면 선택 창에서 모니터·창·탭을 고릅니다.</span>
-      </div>
+        <label class="field">
+          <span>카메라</span>
+          <select id="cameraSelect"></select>
+        </label>
 
-      <label class="field">
-        <span>카메라</span>
-        <select id="cameraSelect"></select>
-      </label>
+        <label class="field">
+          <span>마이크</span>
+          <select id="microphoneSelect"></select>
+        </label>
 
-      <label class="field">
-        <span>마이크</span>
-        <select id="microphoneSelect"></select>
-      </label>
+        <div class="meter-row">
+          <div class="level-meter"><span id="micLevelBar"></span></div>
+          <b id="micDb">-∞ dB</b>
+        </div>
 
-      <button id="refreshDevicesButton" class="button subtle full">카메라·마이크 새로고침</button>
+        <button id="refreshDevicesButton" class="button subtle full">카메라·마이크 새로고침</button>
+      </section>
 
       <div class="separator"></div>
 
-      <div class="switch-row">
-        <div>
-          <strong>얼굴 표시</strong>
-          <small>강의 화면 위에 카메라를 배치합니다.</small>
+      <section class="settings-section">
+        <div class="section-title-row">
+          <h2>얼굴 카메라</h2>
+          <label class="switch">
+            <input id="cameraEnabled" type="checkbox" checked>
+            <span></span>
+          </label>
         </div>
-        <label class="switch">
-          <input id="cameraEnabled" type="checkbox" checked>
-          <span></span>
-        </label>
-      </div>
 
-      <div class="switch-row muted-feature">
-        <div>
-          <strong>AI 배경 제거</strong>
-          <small>다음 개발 단계에서 추가 예정</small>
+        <label class="field">
+          <span>배경 처리</span>
+          <select id="backgroundMode">
+            <option value="original">그대로</option>
+            <option value="image">다른 이미지로 교체</option>
+            <option value="blur">배경 흐림</option>
+            <option value="remove">배경 제거</option>
+          </select>
+        </label>
+
+        <div id="backgroundImageControls" class="upload-row hidden">
+          <label class="button subtle upload-button" for="backgroundImageInput">이미지 선택</label>
+          <input id="backgroundImageInput" type="file" accept="image/*" hidden>
+          <span id="backgroundImageName">선택된 이미지 없음</span>
         </div>
-        <label class="switch">
-          <input type="checkbox" disabled>
-          <span></span>
+
+        <label class="field">
+          <span>카메라 모양</span>
+          <select id="cameraShape">
+            <option value="rounded">둥근 사각형</option>
+            <option value="rectangle">사각형</option>
+            <option value="circle">원형</option>
+          </select>
         </label>
-      </div>
 
-      <label class="field">
-        <span>얼굴 위치</span>
-        <select id="cameraPosition">
-          <option value="bottom-right">오른쪽 아래</option>
-          <option value="bottom-left">왼쪽 아래</option>
-          <option value="top-right">오른쪽 위</option>
-          <option value="top-left">왼쪽 위</option>
-        </select>
-      </label>
+        <label class="field">
+          <span>얼굴 위치</span>
+          <select id="cameraPosition">
+            <option value="bottom-right">오른쪽 아래</option>
+            <option value="bottom-left">왼쪽 아래</option>
+            <option value="top-right">오른쪽 위</option>
+            <option value="top-left">왼쪽 위</option>
+          </select>
+        </label>
 
-      <label class="field">
-        <span>얼굴 크기 <b id="cameraSizeValue">24%</b></span>
-        <input id="cameraSize" type="range" min="15" max="40" value="24">
-      </label>
+        <label class="field">
+          <span>얼굴 크기 <b id="cameraSizeValue">24%</b></span>
+          <input id="cameraSize" type="range" min="15" max="48" value="24">
+        </label>
 
-      <label class="check-row">
-        <input id="mirrorCamera" type="checkbox" checked>
-        <span>카메라 좌우 반전</span>
-      </label>
+        <label class="check-row">
+          <input id="mirrorCamera" type="checkbox" checked>
+          <span>카메라 좌우 반전</span>
+        </label>
+      </section>
 
       <div class="separator"></div>
-      <div class="info-box">
+
+      <div class="shortcut-box">
+        <strong>강의 단축키</strong>
+        <span>F1~F4 장면 전환 · M 마커 · Ctrl+1~4 얼굴 위치</span>
+      </div>
+
+      <div class="info-box runtime-box">
         <strong id="runtimeLabel">WEB 개발판</strong>
         <span>현재는 설치 없이 브라우저에서 테스트합니다.</span>
         <span id="systemAudioInfo"></span>
@@ -118,6 +159,7 @@
 
   <video id="screenVideo" autoplay muted playsinline hidden></video>
   <video id="cameraVideo" autoplay muted playsinline hidden></video>
+  <canvas id="segmentationInput" width="256" height="144" hidden></canvas>
 
   <script type="module" src="./renderer.js"></script>
 </body>
