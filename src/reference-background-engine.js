@@ -6,11 +6,13 @@ const REFERENCE_ID = 'fast-reference';
 const FALLBACK_REFERENCE_ID = 'default';
 
 const STRONG_THRESHOLD = 0.072;
+const MOTION_KEEP_THRESHOLD = 0.028;
+const MOTION_DIFF_THRESHOLD = 0.026;
+const RELEASE_DIFF_THRESHOLD = 0.018;
 const EDGE_LOW = 0.035;
 const EDGE_HIGH = 0.11;
 const EDGE_RADIUS = 2;
-const TEMPORAL_CURRENT = 0.97;
-const MAX_INTERIOR_HOLE_RATIO = 0.004;
+const MAX_INTERIOR_HOLE_RATIO = 0.006;
 
 function targetSize(imageSource) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
@@ -119,7 +121,7 @@ function erode(source, width, height, radius, target) {
 function fillSmallInteriorHoles(source, width, height, labels, queue, target) {
   target.set(source);
   labels.fill(0);
-  const maxArea = Math.max(32, Math.round(source.length * MAX_INTERIOR_HOLE_RATIO));
+  const maxArea = Math.max(48, Math.round(source.length * MAX_INTERIOR_HOLE_RATIO));
 
   for (let start = 0; start < source.length; start += 1) {
     if (source[start] || labels[start]) continue;
@@ -216,7 +218,7 @@ function largestRegion(binary, width, height, labels, queue, output) {
 export class ReferenceBackgroundEngine {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.delegate = '실시간 기준 배경 · 내부 구멍 보정';
+    this.delegate = '실시간 기준 배경 · 움직임 보정';
     this.ready = false;
     this.initializing = null;
     this.referenceReady = false;
@@ -228,6 +230,7 @@ export class ReferenceBackgroundEngine {
     this.reference = null;
     this.latestMask = null;
     this.previousAlpha = null;
+    this.previousLuma = null;
     this.seed = null;
     this.expanded = null;
     this.closed = null;
@@ -236,6 +239,7 @@ export class ReferenceBackgroundEngine {
     this.labels = null;
     this.queue = null;
     this.diff = null;
+    this.motion = null;
     this.alpha = null;
     this.encoded = null;
     this.lastStatusAt = 0;
@@ -274,9 +278,11 @@ export class ReferenceBackgroundEngine {
     this.labels = new Int32Array(size);
     this.queue = new Int32Array(size);
     this.diff = new Float32Array(size);
+    this.motion = new Float32Array(size);
     this.alpha = new Float32Array(size);
     this.encoded = new Float32Array(size);
     this.previousAlpha = null;
+    this.previousLuma = null;
     this.latestMask = null;
   }
 
@@ -339,7 +345,7 @@ export class ReferenceBackgroundEngine {
     try {
       await saveRecord({
         id: REFERENCE_ID,
-        version: 3,
+        version: 4,
         width,
         height,
         pixelBuffer: this.reference.buffer.slice(0),
@@ -365,6 +371,7 @@ export class ReferenceBackgroundEngine {
     this.reference = null;
     this.latestMask = null;
     this.previousAlpha = null;
+    this.previousLuma = null;
     this.#updateStatus();
   }
 
@@ -375,6 +382,9 @@ export class ReferenceBackgroundEngine {
     this.context.drawImage(imageSource, 0, 0, this.width, this.height);
     const current = this.context.getImageData(0, 0, this.width, this.height).data;
     const plane = this.width * this.height;
+    const previous = this.previousAlpha?.length === plane ? this.previousAlpha : null;
+    const previousLuma = this.previousLuma?.length === plane ? this.previousLuma : null;
+    const nextLuma = previousLuma || new Uint8Array(plane);
 
     let offsetR = 0;
     let offsetG = 0;
@@ -404,46 +414,71 @@ export class ReferenceBackgroundEngine {
 
     this.seed.fill(0);
     let diffSum = 0;
+    let motionSum = 0;
+
     for (let i = 0; i < plane; i += 1) {
       const p = i * 4;
-      const dr = Math.abs((current[p] - offsetR) - this.reference[p]);
-      const dg = Math.abs((current[p + 1] - offsetG) - this.reference[p + 1]);
-      const db = Math.abs((current[p + 2] - offsetB) - this.reference[p + 2]);
+      const r = Math.max(0, Math.min(255, current[p] - offsetR));
+      const g = Math.max(0, Math.min(255, current[p + 1] - offsetG));
+      const b = Math.max(0, Math.min(255, current[p + 2] - offsetB));
+      const dr = Math.abs(r - this.reference[p]);
+      const dg = Math.abs(g - this.reference[p + 1]);
+      const db = Math.abs(b - this.reference[p + 2]);
       const difference = ((dr * 0.25) + (dg * 0.5) + (db * 0.25)) / 255;
+      const luma = Math.round((r * 0.25) + (g * 0.5) + (b * 0.25));
+      const motion = previousLuma ? Math.abs(luma - previousLuma[i]) / 255 : 0;
+
       this.diff[i] = difference;
+      this.motion[i] = motion;
+      nextLuma[i] = luma;
       diffSum += difference;
-      if (difference > STRONG_THRESHOLD) this.seed[i] = 1;
+      motionSum += motion;
+
+      const motionCarry = previous
+        && previous[i] > 0.55
+        && motion > MOTION_KEEP_THRESHOLD
+        && difference > MOTION_DIFF_THRESHOLD;
+      if (difference > STRONG_THRESHOLD || motionCarry) this.seed[i] = 1;
     }
 
-    // First close single-pixel cracks without expanding the final silhouette.
+    this.previousLuma = nextLuma;
+
+    // Close tiny cracks, then fill only enclosed holes. This preserves open gaps
+    // such as the space between an arm and torso.
     dilate(this.seed, this.width, this.height, 1, this.expanded);
     erode(this.expanded, this.width, this.height, 1, this.closed);
-
-    // Fill only small enclosed background islands. Open gaps such as between
-    // an arm and torso stay untouched because they connect to the outer background.
     fillSmallInteriorHoles(this.closed, this.width, this.height, this.labels, this.queue, this.expanded);
 
-    // Keep only the main connected subject. Detached speckles disappear here.
+    // Keep the main subject only, removing detached compression/noise speckles.
     largestRegion(this.expanded, this.width, this.height, this.labels, this.queue, this.region);
-
-    // Only a narrow band around the main subject may become a soft edge.
     dilate(this.region, this.width, this.height, EDGE_RADIUS, this.halo);
 
-    const previous = this.previousAlpha?.length === plane ? this.previousAlpha : null;
     for (let i = 0; i < plane; i += 1) {
       let value = 0;
       if (this.region[i]) {
-        value = Math.max(0.94, smoothstep(STRONG_THRESHOLD, 0.14, this.diff[i]));
+        value = Math.max(0.95, smoothstep(STRONG_THRESHOLD, 0.14, this.diff[i]));
       } else if (this.halo[i]) {
-        const edge = smoothstep(EDGE_LOW, EDGE_HIGH, this.diff[i]);
-        value = edge * 0.82;
+        value = smoothstep(EDGE_LOW, EDGE_HIGH, this.diff[i]) * 0.82;
       }
 
-      const mixed = previous
-        ? (value * TEMPORAL_CURRENT) + (previous[i] * (1 - TEMPORAL_CURRENT))
-        : value;
-      this.alpha[i] = mixed;
-      this.encoded[i] = encodeAlphaForSharedRenderer(mixed);
+      // During movement, a pixel that was foreground in the previous frame may
+      // temporarily become weak because of motion blur/compression. Keep it only
+      // while the current frame still differs from the captured background.
+      if (previous && previous[i] > value) {
+        if (this.diff[i] <= RELEASE_DIFF_THRESHOLD) {
+          // The captured background is back: release immediately to avoid trails.
+          value = 0;
+        } else if (this.motion[i] > MOTION_KEEP_THRESHOLD && this.diff[i] > MOTION_DIFF_THRESHOLD) {
+          value = Math.max(value, previous[i] * 0.82);
+        } else {
+          value = Math.max(value, previous[i] * 0.16);
+        }
+      } else if (previous && value > previous[i]) {
+        value = (value * 0.98) + (previous[i] * 0.02);
+      }
+
+      this.alpha[i] = value;
+      this.encoded[i] = encodeAlphaForSharedRenderer(value);
     }
 
     this.previousAlpha = this.alpha.slice();
@@ -453,11 +488,12 @@ export class ReferenceBackgroundEngine {
     if (now - this.lastStatusAt > 1000) {
       this.lastStatusAt = now;
       const meanDiff = diffSum / Math.max(1, plane);
-      this.onStatus(`AI 준비 · ${this.delegate} · 차이 ${(meanDiff * 100).toFixed(1)}%`);
+      const meanMotion = motionSum / Math.max(1, plane);
+      this.onStatus(`AI 준비 · ${this.delegate} · 차이 ${(meanDiff * 100).toFixed(1)}% · 움직임 ${(meanMotion * 100).toFixed(1)}%`);
       const status = document.getElementById('backgroundReferenceStatus');
       if (status) {
         const source = this.referenceSource === 'saved' ? '저장 배경 재사용' : '다음 촬영까지 재사용';
-        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 내부 구멍 보정 실시간 차분`;
+        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 움직임 대응 실시간 차분`;
       }
     }
 
@@ -470,6 +506,7 @@ export class ReferenceBackgroundEngine {
     this.reference = null;
     this.latestMask = null;
     this.previousAlpha = null;
+    this.previousLuma = null;
     this.onStatus('AI 대기');
   }
 }
