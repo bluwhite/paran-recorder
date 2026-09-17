@@ -1,5 +1,5 @@
-const MAX_INPUT_WIDTH = 384;
-const MIN_IDLE_AFTER_INFERENCE_MS = 300;
+const MAX_INPUT_WIDTH = 320;
+const MIN_IDLE_AFTER_INFERENCE_MS = 80;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -122,7 +122,7 @@ export class BackgroundMattingV2Engine {
     this.onStatus('배경 기준 AI Worker 모델 불러오는 중');
     await this.#request('init');
     this.ready = true;
-    this.delegate = 'WASM Worker · 저부하';
+    this.delegate = 'WASM Worker · 균형';
     this.#updateStatus();
     return true;
   }
