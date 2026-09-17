@@ -1,4 +1,5 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
+import { ModNetEngine } from './modnet-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -145,7 +146,6 @@ function softenMask(binary, width, height, previous) {
       const current = binary[index]
         ? Math.max(0.72, neighborhood)
         : (neighborhood >= 0.45 ? neighborhood * 0.48 : 0);
-      // Very light smoothing only; enough to reduce flicker without visible motion lag.
       alpha[index] = previous?.length === binary.length
         ? (current * 0.92) + (previous[index] * 0.08)
         : current;
@@ -161,7 +161,6 @@ function buildForegroundMask(categories, width, height, previous) {
 
   for (let i = 0; i < size; i += 1) {
     const category = categories[i];
-    // 1 hair, 2 body-skin, 3 face-skin, 4 clothes
     if (category >= 1 && category <= 4) core[i] = 1;
     if (category === 1 || category === 3) head[i] = 1;
   }
@@ -179,22 +178,18 @@ function buildForegroundMask(categories, width, height, previous) {
       continue;
     }
 
-    // class 5 = others. Glasses, earphones and accessories often land here.
-    // Keep it only when it hugs the detected person, especially the head.
     if (category === 5 && (headHalo[i] || bodyHalo[i])) {
       foreground[i] = 1;
       continue;
     }
 
-    // Glass lenses can occasionally be classified as background. Fill only pixels
-    // enclosed by detected hair/face in both horizontal and vertical directions.
     if (headInterior[i]) foreground[i] = 1;
   }
 
   return softenMask(foreground, width, height, previous);
 }
 
-export class PersonSegmenter {
+class MediaPipePersonSegmenter {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
     this.segmenter = null;
@@ -273,5 +268,43 @@ export class PersonSegmenter {
     this.latestMask = null;
     this.previousAlpha = null;
     this.onStatus('AI 대기');
+  }
+}
+
+export class PersonSegmenter {
+  constructor(onStatus = () => {}) {
+    this.onStatus = onStatus;
+    this.engine = null;
+    this.engineMode = '';
+  }
+
+  #selectedMode() {
+    return document.getElementById('aiEngineSelect')?.value === 'modnet' ? 'modnet' : 'mediapipe';
+  }
+
+  #getEngine() {
+    const selectedMode = this.#selectedMode();
+    if (this.engine && this.engineMode === selectedMode) return this.engine;
+
+    this.engine?.close?.();
+    this.engineMode = selectedMode;
+    this.engine = selectedMode === 'modnet'
+      ? new ModNetEngine(this.onStatus)
+      : new MediaPipePersonSegmenter(this.onStatus);
+    return this.engine;
+  }
+
+  async ensureReady() {
+    return this.#getEngine().ensureReady();
+  }
+
+  segment(imageSource, timestampMs = performance.now()) {
+    return this.#getEngine().segment(imageSource, timestampMs);
+  }
+
+  close() {
+    this.engine?.close?.();
+    this.engine = null;
+    this.engineMode = '';
   }
 }
