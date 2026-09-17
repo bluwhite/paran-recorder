@@ -109,15 +109,16 @@
           <span>AI 배경 엔진</span>
           <select id="aiEngineSelect">
             <option value="mediapipe">빠른 모드 · MediaPipe</option>
-            <option value="modnet">고품질 · 배경 기준 (실험)</option>
+            <option value="reference" selected>실시간 · 배경 기준 (실험)</option>
+            <option value="modnet">최고품질 · 배경 기준 (느림)</option>
           </select>
         </label>
 
         <div id="backgroundReferenceControls" class="info-box field-note">
           <strong>배경 기준 방식</strong>
-          <span>고품질 모드에서는 사람이 화면에서 잠깐 벗어난 뒤 빈 배경을 한 번 촬영합니다.</span>
+          <span>배경 기준 모드에서는 사람이 화면에서 잠깐 벗어난 뒤 빈 배경을 한 번 촬영합니다. 저장된 배경은 다음 실행에서도 재사용합니다.</span>
           <button id="backgroundReferenceButton" class="button subtle full" type="button">빈 배경 촬영</button>
-          <span id="backgroundReferenceStatus">미리보기 시작 → 고품질 모드 선택 → 사람이 비킨 상태에서 촬영</span>
+          <span id="backgroundReferenceStatus">미리보기 시작 → 배경 기준 모드 선택 → 사람이 비킨 상태에서 촬영</span>
         </div>
 
         <div id="backgroundImageControls" class="upload-row hidden">
