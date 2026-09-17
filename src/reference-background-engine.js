@@ -10,6 +10,7 @@ const EDGE_LOW = 0.035;
 const EDGE_HIGH = 0.11;
 const EDGE_RADIUS = 2;
 const TEMPORAL_CURRENT = 0.97;
+const MAX_INTERIOR_HOLE_RATIO = 0.004;
 
 function targetSize(imageSource) {
   const sourceWidth = imageSource.videoWidth || imageSource.naturalWidth || imageSource.width || 1280;
@@ -115,6 +116,50 @@ function erode(source, width, height, radius, target) {
   }
 }
 
+function fillSmallInteriorHoles(source, width, height, labels, queue, target) {
+  target.set(source);
+  labels.fill(0);
+  const maxArea = Math.max(32, Math.round(source.length * MAX_INTERIOR_HOLE_RATIO));
+
+  for (let start = 0; start < source.length; start += 1) {
+    if (source[start] || labels[start]) continue;
+
+    let head = 0;
+    let tail = 0;
+    let touchesEdge = false;
+    labels[start] = 1;
+    queue[tail++] = start;
+
+    while (head < tail) {
+      const index = queue[head++];
+      const y = Math.floor(index / width);
+      const x = index - y * width;
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesEdge = true;
+
+      if (x > 0 && !source[index - 1] && !labels[index - 1]) {
+        labels[index - 1] = 1;
+        queue[tail++] = index - 1;
+      }
+      if (x + 1 < width && !source[index + 1] && !labels[index + 1]) {
+        labels[index + 1] = 1;
+        queue[tail++] = index + 1;
+      }
+      if (y > 0 && !source[index - width] && !labels[index - width]) {
+        labels[index - width] = 1;
+        queue[tail++] = index - width;
+      }
+      if (y + 1 < height && !source[index + width] && !labels[index + width]) {
+        labels[index + width] = 1;
+        queue[tail++] = index + width;
+      }
+    }
+
+    if (!touchesEdge && tail <= maxArea) {
+      for (let i = 0; i < tail; i += 1) target[queue[i]] = 1;
+    }
+  }
+}
+
 function largestRegion(binary, width, height, labels, queue, output) {
   labels.fill(0);
   output.fill(0);
@@ -171,7 +216,7 @@ function largestRegion(binary, width, height, labels, queue, output) {
 export class ReferenceBackgroundEngine {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.delegate = '실시간 기준 배경 · 경계 개선';
+    this.delegate = '실시간 기준 배경 · 내부 구멍 보정';
     this.ready = false;
     this.initializing = null;
     this.referenceReady = false;
@@ -294,7 +339,7 @@ export class ReferenceBackgroundEngine {
     try {
       await saveRecord({
         id: REFERENCE_ID,
-        version: 2,
+        version: 3,
         width,
         height,
         pixelBuffer: this.reference.buffer.slice(0),
@@ -370,12 +415,16 @@ export class ReferenceBackgroundEngine {
       if (difference > STRONG_THRESHOLD) this.seed[i] = 1;
     }
 
-    // Close tiny holes without permanently expanding the subject boundary.
+    // First close single-pixel cracks without expanding the final silhouette.
     dilate(this.seed, this.width, this.height, 1, this.expanded);
     erode(this.expanded, this.width, this.height, 1, this.closed);
 
+    // Fill only small enclosed background islands. Open gaps such as between
+    // an arm and torso stay untouched because they connect to the outer background.
+    fillSmallInteriorHoles(this.closed, this.width, this.height, this.labels, this.queue, this.expanded);
+
     // Keep only the main connected subject. Detached speckles disappear here.
-    largestRegion(this.closed, this.width, this.height, this.labels, this.queue, this.region);
+    largestRegion(this.expanded, this.width, this.height, this.labels, this.queue, this.region);
 
     // Only a narrow band around the main subject may become a soft edge.
     dilate(this.region, this.width, this.height, EDGE_RADIUS, this.halo);
@@ -408,7 +457,7 @@ export class ReferenceBackgroundEngine {
       const status = document.getElementById('backgroundReferenceStatus');
       if (status) {
         const source = this.referenceSource === 'saved' ? '저장 배경 재사용' : '다음 촬영까지 재사용';
-        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 경계 개선 실시간 차분`;
+        status.textContent = `빈 배경 ${this.width}×${this.height} · ${source} · 내부 구멍 보정 실시간 차분`;
       }
     }
 
