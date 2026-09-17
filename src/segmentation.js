@@ -149,10 +149,10 @@ function softenMask(binary, width, height, previous) {
       const index = y * width + x;
       const neighborhood = count / total;
       const current = binary[index]
-        ? Math.max(0.72, neighborhood)
-        : (neighborhood >= 0.45 ? neighborhood * 0.48 : 0);
+        ? Math.max(0.78, neighborhood)
+        : (neighborhood >= 0.56 ? neighborhood * 0.30 : 0);
       alpha[index] = previous?.length === binary.length
-        ? (current * 0.92) + (previous[index] * 0.08)
+        ? (current * 0.98) + (previous[index] * 0.02)
         : current;
     }
   }
@@ -171,8 +171,8 @@ function buildForegroundMask(categories, width, height, previous) {
   }
 
   const mainPerson = largestConnectedRegion(core, width, height);
-  const bodyHalo = dilateMask(mainPerson, width, height, 2);
-  const headHalo = dilateMask(head, width, height, 7);
+  const bodyHalo = dilateMask(mainPerson, width, height, 1);
+  const headHalo = dilateMask(head, width, height, 5);
   const headInterior = enclosedHeadMask(head, width, height);
   const foreground = new Uint8Array(size);
 
@@ -240,7 +240,7 @@ class MediaPipePersonSegmenter {
       this.delegate = 'CPU';
     }
 
-    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate}`);
+    this.onStatus(`AI 준비 · 빠른 멀티클래스 ${this.delegate} · 경계/추종 개선`);
     return this.segmenter;
   }
 
