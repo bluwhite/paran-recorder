@@ -1,5 +1,5 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
-import { ModNetEngine } from './modnet-engine.js';
+import { BackgroundMattingV2Engine } from './background-matting-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -276,10 +276,11 @@ export class PersonSegmenter {
     this.onStatus = onStatus;
     this.engine = null;
     this.engineMode = '';
+    this.#wireBackgroundCaptureButton();
   }
 
   #selectedMode() {
-    return document.getElementById('aiEngineSelect')?.value === 'modnet' ? 'modnet' : 'mediapipe';
+    return document.getElementById('aiEngineSelect')?.value === 'modnet' ? 'backgroundmatting' : 'mediapipe';
   }
 
   #getEngine() {
@@ -288,10 +289,43 @@ export class PersonSegmenter {
 
     this.engine?.close?.();
     this.engineMode = selectedMode;
-    this.engine = selectedMode === 'modnet'
-      ? new ModNetEngine(this.onStatus)
+    this.engine = selectedMode === 'backgroundmatting'
+      ? new BackgroundMattingV2Engine(this.onStatus)
       : new MediaPipePersonSegmenter(this.onStatus);
     return this.engine;
+  }
+
+  #wireBackgroundCaptureButton() {
+    const button = document.getElementById('backgroundReferenceButton');
+    const status = document.getElementById('backgroundReferenceStatus');
+    if (!button) return;
+
+    button.addEventListener('click', async () => {
+      try {
+        if (this.#selectedMode() !== 'backgroundmatting') {
+          throw new Error('AI 배경 엔진을 고품질 · 배경 기준으로 먼저 선택하세요.');
+        }
+
+        const cameraVideo = document.getElementById('cameraVideo');
+        if (!cameraVideo || cameraVideo.readyState < 2) {
+          throw new Error('미리보기를 먼저 시작해 카메라 화면을 준비하세요.');
+        }
+
+        button.disabled = true;
+        if (status) status.textContent = '모델 준비 중...';
+        const engine = this.#getEngine();
+        await engine.ensureReady();
+        const size = engine.captureBackground(cameraVideo);
+        if (status) status.textContent = `빈 배경 저장 완료 · ${size.width}×${size.height}`;
+        this.onStatus(`AI 준비 · 배경 기준 ${engine.delegate || ''} · 배경 저장 완료`);
+      } catch (error) {
+        console.error('Background reference capture failed:', error);
+        if (status) status.textContent = `배경 촬영 오류 · ${errorText(error)}`;
+        this.onStatus('AI 오류');
+      } finally {
+        button.disabled = false;
+      }
+    });
   }
 
   async ensureReady() {
@@ -300,12 +334,20 @@ export class PersonSegmenter {
 
   segment(imageSource, timestampMs = performance.now()) {
     const engine = this.#getEngine();
-    if (this.engineMode === 'modnet') {
+    if (this.engineMode === 'backgroundmatting') {
       const cameraVideo = document.getElementById('cameraVideo');
       const originalSource = cameraVideo?.readyState >= 2 ? cameraVideo : imageSource;
       return engine.segment(originalSource, timestampMs);
     }
     return engine.segment(imageSource, timestampMs);
+  }
+
+  hasBackgroundReference() {
+    return this.engineMode === 'backgroundmatting' && Boolean(this.engine?.hasBackground?.());
+  }
+
+  clearBackgroundReference() {
+    if (this.engineMode === 'backgroundmatting') this.engine?.clearBackground?.();
   }
 
   close() {
