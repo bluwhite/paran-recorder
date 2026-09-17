@@ -7,9 +7,10 @@ const MIN_INFERENCE_INTERVAL_MS = 120;
 
 ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 ort.env.wasm.numThreads = 1;
-// Keep BackgroundMattingV2 on the fully compatible WASM backend, but move the
-// heavy session work to ORT's proxy Web Worker so the recorder UI stays responsive.
-ort.env.wasm.proxy = true;
+// Proxy workers can fail under CSP-restricted deployments such as this web app.
+// Keep the fully compatible WASM backend on the main thread, while reducing
+// input size and inference cadence to lower UI pressure.
+ort.env.wasm.proxy = false;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -97,16 +98,13 @@ export class BackgroundMattingV2Engine {
   }
 
   async #initialize() {
-    // The official BackgroundMattingV2 ONNX graph uses ROIAlign and
-    // ScatterElements. ORT Web's WASM backend supports the full ONNX operator
-    // set. The proxy worker keeps that compatible backend without blocking UI.
-    this.onStatus('배경 기준 AI WASM Worker 모델 불러오는 중');
+    this.onStatus('배경 기준 AI WASM 모델 불러오는 중');
     this.session = await ort.InferenceSession.create(MODEL_URL, {
       graphOptimizationLevel: 'all',
       executionMode: 'sequential',
       executionProviders: ['wasm'],
     });
-    this.delegate = 'WASM Worker';
+    this.delegate = 'WASM · 경량';
 
     this.#updateStatus();
     return this.session;
