@@ -1,5 +1,5 @@
-const MAX_INPUT_WIDTH = 512;
-const MIN_INFERENCE_INTERVAL_MS = 120;
+const MAX_INPUT_WIDTH = 384;
+const MIN_IDLE_AFTER_INFERENCE_MS = 300;
 
 function errorText(error) {
   if (error instanceof Error && error.message) return error.message;
@@ -59,7 +59,7 @@ export class BackgroundMattingV2Engine {
     this.referenceReady = false;
     this.width = 0;
     this.height = 0;
-    this.lastRunStartedAt = 0;
+    this.lastRunFinishedAt = 0;
     this.lastDiagnosticsAt = 0;
     this.requestId = 0;
     this.pending = new Map();
@@ -122,7 +122,7 @@ export class BackgroundMattingV2Engine {
     this.onStatus('배경 기준 AI Worker 모델 불러오는 중');
     await this.#request('init');
     this.ready = true;
-    this.delegate = 'WASM Worker';
+    this.delegate = 'WASM Worker · 저부하';
     this.#updateStatus();
     return true;
   }
@@ -150,7 +150,7 @@ export class BackgroundMattingV2Engine {
     this.height = height;
     this.referenceReady = true;
     this.latestMask = null;
-    this.lastRunStartedAt = 0;
+    this.lastRunFinishedAt = 0;
     this.#updateStatus();
     return { width, height };
   }
@@ -158,7 +158,7 @@ export class BackgroundMattingV2Engine {
   clearBackground() {
     this.referenceReady = false;
     this.latestMask = null;
-    this.lastRunStartedAt = 0;
+    this.lastRunFinishedAt = 0;
     if (this.worker && this.ready) {
       this.#request('clear').catch(() => {});
     }
@@ -207,8 +207,7 @@ export class BackgroundMattingV2Engine {
     }
 
     const now = performance.now();
-    if (!this.busy && now - this.lastRunStartedAt >= MIN_INFERENCE_INTERVAL_MS) {
-      this.lastRunStartedAt = now;
+    if (!this.busy && (this.lastRunFinishedAt === 0 || now - this.lastRunFinishedAt >= MIN_IDLE_AFTER_INFERENCE_MS)) {
       this.busy = true;
       this.#run(imageSource)
         .catch((error) => {
@@ -217,6 +216,7 @@ export class BackgroundMattingV2Engine {
         })
         .finally(() => {
           this.busy = false;
+          this.lastRunFinishedAt = performance.now();
         });
     }
 
@@ -238,7 +238,7 @@ export class BackgroundMattingV2Engine {
     this.referenceReady = false;
     this.width = 0;
     this.height = 0;
-    this.lastRunStartedAt = 0;
+    this.lastRunFinishedAt = 0;
     this.onStatus('AI 대기');
   }
 }
