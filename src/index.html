@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; media-src 'self' blob:; script-src 'self'; style-src 'self'; connect-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; img-src 'self' data: blob:; media-src 'self' blob:; script-src 'self'; style-src 'self'; connect-src 'self' ws: http: https:">
   <title>Paran Recorder</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <header class="app-header">
     <div>
-      <div class="eyebrow">PARAN RECORDER</div>
+      <div class="eyebrow">PARAN RECORDER · WEB FIRST</div>
       <h1>강의 녹화</h1>
     </div>
     <div id="statusBadge" class="status-badge">준비</div>
@@ -21,7 +21,7 @@
       <div class="panel-title-row">
         <div>
           <h2>녹화 화면</h2>
-          <p>실제 저장되는 화면을 그대로 미리 봅니다.</p>
+          <p>화면과 카메라를 합성한 실제 저장 화면입니다.</p>
         </div>
         <div id="recordingTimer" class="timer">00:00:00</div>
       </div>
@@ -30,12 +30,12 @@
         <canvas id="previewCanvas" width="1280" height="720"></canvas>
         <div id="emptyPreview" class="empty-preview">
           <strong>미리보기를 시작하세요</strong>
-          <span>화면, 카메라, 마이크를 선택한 뒤 아래 버튼을 누르세요.</span>
+          <span>버튼을 누르면 브라우저의 화면 선택 창이 열립니다.</span>
         </div>
       </div>
 
       <div class="primary-actions">
-        <button id="previewButton" class="button secondary">▶ 미리보기 시작</button>
+        <button id="previewButton" class="button secondary">▶ 화면 선택 · 미리보기</button>
         <button id="recordButton" class="button record" disabled>● 녹화 시작</button>
         <button id="stopButton" class="button stop" disabled>■ 녹화 종료</button>
       </div>
@@ -45,13 +45,10 @@
     <aside class="settings-panel panel">
       <h2>입력 설정</h2>
 
-      <label class="field">
-        <span>녹화할 화면</span>
-        <div class="inline-control">
-          <select id="sourceSelect"></select>
-          <button id="refreshSourcesButton" class="icon-button" title="화면 목록 새로고침">↻</button>
-        </div>
-      </label>
+      <div class="info-box field-note">
+        <strong>녹화할 화면</strong>
+        <span>미리보기를 시작할 때 Chrome/Edge의 화면 선택 창에서 모니터·창·탭을 고릅니다.</span>
+      </div>
 
       <label class="field">
         <span>카메라</span>
@@ -81,7 +78,7 @@
       <div class="switch-row muted-feature">
         <div>
           <strong>AI 배경 제거</strong>
-          <small>다음 버전에서 추가 예정</small>
+          <small>다음 개발 단계에서 추가 예정</small>
         </div>
         <label class="switch">
           <input type="checkbox" disabled>
@@ -111,9 +108,10 @@
 
       <div class="separator"></div>
       <div class="info-box">
-        <strong>v0.1</strong>
-        <span>화면 + 얼굴 + 마이크를 하나의 WebM 파일로 저장합니다.</span>
+        <strong id="runtimeLabel">WEB 개발판</strong>
+        <span>현재는 설치 없이 브라우저에서 테스트합니다.</span>
         <span id="systemAudioInfo"></span>
+        <span id="saveModeInfo"></span>
       </div>
     </aside>
   </main>
@@ -121,6 +119,6 @@
   <video id="screenVideo" autoplay muted playsinline hidden></video>
   <video id="cameraVideo" autoplay muted playsinline hidden></video>
 
-  <script src="renderer.js"></script>
+  <script type="module" src="./renderer.js"></script>
 </body>
 </html>
