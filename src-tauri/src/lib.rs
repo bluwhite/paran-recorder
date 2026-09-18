@@ -111,8 +111,8 @@ fn native_runtime_info(
                     provider,
                     model: MODEL_NAME.to_string(),
                     message: "ONNX Runtime Native 준비 완료".to_string(),
-                    input_width: 512,
-                    input_height: 288,
+                    input_width: 384,
+                    input_height: 224,
                 }
             }
             Err(error) => NativeRuntimeInfo {
@@ -120,8 +120,8 @@ fn native_runtime_info(
                 provider: "Unavailable".to_string(),
                 model: MODEL_NAME.to_string(),
                 message: error,
-                input_width: 512,
-                input_height: 288,
+                input_width: 384,
+                input_height: 224,
             },
         }
     }
@@ -134,8 +134,8 @@ fn native_runtime_info(
             provider: "Unsupported".to_string(),
             model: MODEL_NAME.to_string(),
             message: "현재 프로토타입은 Windows에서만 ONNX Runtime Native를 지원합니다.".to_string(),
-            input_width: 512,
-            input_height: 288,
+            input_width: 384,
+            input_height: 224,
         }
     }
 }
