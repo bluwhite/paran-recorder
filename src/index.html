@@ -83,6 +83,22 @@
         </div>
 
         <button id="refreshDevicesButton" class="button subtle full">카메라·마이크 새로고침</button>
+
+        <div class="capture-region-card">
+          <div class="capture-region-title">
+            <strong>녹화 영역</strong>
+            <b>1280×720 · HD</b>
+          </div>
+          <span id="captureRegionStatus">고정 16:9 영역을 준비합니다.</span>
+          <div class="capture-region-actions">
+            <button id="captureRegionButton" class="button subtle" type="button">영역 박스 표시</button>
+            <button id="captureRegionCenterButton" class="button subtle" type="button">화면 가운데</button>
+          </div>
+          <label class="check-row">
+            <input id="captureRegionEdit" type="checkbox">
+            <span>영역 위치 조정 · 켜면 박스 위쪽을 끌어 이동</span>
+          </label>
+        </div>
       </section>
 
       <div class="separator"></div>
