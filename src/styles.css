@@ -88,6 +88,7 @@ input[type="range"] { accent-color: #3b82f6; }
 .field-note { margin-bottom: 14px; }
 .runtime-box { margin-top: 14px; }
 .ai-engine-note { margin-bottom: 10px; }
+.native-engine-info { margin: -2px 0 12px; padding: 8px 10px; border-radius: 9px; border: 1px solid rgba(34, 197, 94, .2); background: rgba(6, 78, 59, .22); color: #a7f3d0; font-size: 10.5px; line-height: 1.4; }
 
 .advanced-settings { margin: 0 0 14px; border: 1px solid #26344c; border-radius: 11px; background: rgba(11, 18, 32, .72); overflow: hidden; }
 .advanced-settings summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; cursor: pointer; list-style: none; color: #dbeafe; font-size: 12px; font-weight: 800; user-select: none; }
