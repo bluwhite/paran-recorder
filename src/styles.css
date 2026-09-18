@@ -105,6 +105,7 @@ input[type="range"] { accent-color: #3b82f6; }
 .compact-field small { color: #74869f; font-weight: 500; line-height: 1.35; }
 .range-title { display: flex; align-items: center; justify-content: space-between; }
 .range-title b { min-width: 30px; margin-left: auto; text-align: right; }
+.rvm-performance { margin: 3px 0 10px; text-align: center; font-variant-numeric: tabular-nums; }
 
 .upload-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; margin: -4px 0 14px; }
 .upload-button { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; padding: 8px 12px; cursor: pointer; }
