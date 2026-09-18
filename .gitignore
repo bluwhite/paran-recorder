@@ -3,5 +3,8 @@ dist/
 out/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/models/
+src-tauri/resources/*.dll
+native-test/
 .DS_Store
 *.log
