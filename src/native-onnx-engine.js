@@ -36,7 +36,8 @@ function cleanWeakSpeckles(source, width, height) {
         }
       }
 
-      if (neighbors <= 2) output[index] = 0;
+      const requiredNeighbors = value <= 72 ? 4 : 3;
+      if (neighbors < requiredNeighbors) output[index] = 0;
     }
   }
 
@@ -51,18 +52,22 @@ function stabilizeEdgeAlpha(current, previous) {
     const now = current[i];
     const before = previous[i];
 
+    const delta = now - before;
+    const moving = Math.abs(delta) >= 12;
+    const edgeBand = (now > 8 && now < 230) || (before > 8 && before < 230);
+
     let previousWeight;
-    if (now > before + 18) {
-      // New subject pixels should appear almost immediately.
-      previousWeight = 0.04;
-    } else if (before > now + 18) {
-      // Keep a very small release tail to stop edge blinking.
-      previousWeight = 0.16;
-    } else if ((now > 8 && now < 230) || (before > 8 && before < 230)) {
-      // Small changes in the uncertain edge band are the main source of shimmer.
-      previousWeight = 0.32;
+    if (moving && delta > 0) {
+      // New subject pixels use the current frame immediately.
+      previousWeight = 0.0;
+    } else if (moving && delta < 0) {
+      // Release old pixels quickly so the mask does not trail behind motion.
+      previousWeight = 0.07;
+    } else if (edgeBand) {
+      // Stable uncertain edges get stronger temporal damping to suppress shimmer.
+      previousWeight = 0.46;
     } else {
-      previousWeight = 0.08;
+      previousWeight = 0.06;
     }
 
     let value = Math.round((now * (1 - previousWeight)) + (before * previousWeight));
