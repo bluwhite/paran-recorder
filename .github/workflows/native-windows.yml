@@ -11,6 +11,7 @@ on:
       - "src/segmentation.js"
       - "src/renderer.js"
       - "src/index.html"
+      - "src/styles.css"
       - "scripts/prepare-native-model.mjs"
       - "package.json"
       - ".github/workflows/native-windows.yml"
