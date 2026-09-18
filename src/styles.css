@@ -167,3 +167,39 @@ input[type="range"] { accent-color: #3b82f6; }
   font-size: 10px;
   line-height: 1.4;
 }
+
+.capture-region-card {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(96, 165, 250, .22);
+  background: rgba(30, 58, 138, .12);
+}
+.capture-region-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.capture-region-title strong { color: #dbeafe; }
+.capture-region-title b {
+  color: #93c5fd;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+#captureRegionStatus {
+  display: block;
+  color: #8ea0b9;
+  font-size: 10.5px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+.capture-region-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.capture-region-actions .button { padding: 8px 7px; }
