@@ -234,7 +234,8 @@ async function ensureSegmenter() {
 
 function requestSegmentation(now) {
   if (backgroundMode.value === 'original' || !cameraStream || cameraVideo.readyState < 2) return;
-  if (segmentBusy || now - lastSegmentAt < 30) return;
+  const intervalMs = document.getElementById('aiEngineSelect')?.value === 'native-onnx' ? 16 : 30;
+  if (segmentBusy || now - lastSegmentAt < intervalMs) return;
   lastSegmentAt = now;
   segmentBusy = true;
 
