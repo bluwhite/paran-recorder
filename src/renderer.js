@@ -12,6 +12,14 @@ const cameraSelect = document.getElementById('cameraSelect');
 const microphoneSelect = document.getElementById('microphoneSelect');
 const cameraEnabled = document.getElementById('cameraEnabled');
 const cameraPosition = document.getElementById('cameraPosition');
+const positionEditEnabled = document.getElementById('positionEditEnabled');
+const positionEditLabel = document.getElementById('positionEditLabel');
+const positionOverlay = document.getElementById('positionOverlay');
+const cameraX = document.getElementById('cameraX');
+const cameraY = document.getElementById('cameraY');
+const cameraXValue = document.getElementById('cameraXValue');
+const cameraYValue = document.getElementById('cameraYValue');
+const positionResetButton = document.getElementById('positionResetButton');
 const cameraSize = document.getElementById('cameraSize');
 const cameraSizeValue = document.getElementById('cameraSizeValue');
 const cameraShape = document.getElementById('cameraShape');
@@ -72,7 +80,10 @@ let renderedMaskVersion = -1;
 let segmentBusy = false;
 let lastSegmentAt = 0;
 let segmentErrorShown = false;
+let presenterPosition = { x: 0.86, y: 0.84 };
+let presenterDrag = null;
 
+const PRESENTER_SETTINGS_KEY = 'paran-recorder-presenter-v1';
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 const segmenter = new PersonSegmenter((text) => {
   aiStatus.textContent = text;
@@ -168,6 +179,10 @@ function drawContain(context, source, x, y, width, height) {
   context.drawImage(source, drawX, drawY, drawWidth, drawHeight);
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function cameraRect() {
   const width = canvas.width * (Number(cameraSize.value) / 100);
   const ratio = cameraShape.value === 'circle'
@@ -177,13 +192,147 @@ function cameraRect() {
       : 9 / 16);
   const height = width * ratio;
   const margin = 28;
+  const centerX = presenterPosition.x * canvas.width;
+  const centerY = presenterPosition.y * canvas.height;
+  const minX = Math.min(margin, Math.max(0, canvas.width - width));
+  const minY = Math.min(margin, Math.max(0, canvas.height - height));
+  const maxX = Math.max(minX, canvas.width - width - margin);
+  const maxY = Math.max(minY, canvas.height - height - margin);
 
-  switch (cameraPosition.value) {
-    case 'top-left': return { x: margin, y: margin, width, height };
-    case 'top-right': return { x: canvas.width - width - margin, y: margin, width, height };
-    case 'bottom-left': return { x: margin, y: canvas.height - height - margin, width, height };
-    default: return { x: canvas.width - width - margin, y: canvas.height - height - margin, width, height };
+  return {
+    x: clamp(centerX - width / 2, minX, maxX),
+    y: clamp(centerY - height / 2, minY, maxY),
+    width,
+    height,
+  };
+}
+
+function syncPresenterControls() {
+  const xPercent = Math.round(presenterPosition.x * 100);
+  const yPercent = Math.round(presenterPosition.y * 100);
+  cameraX.value = String(xPercent);
+  cameraY.value = String(yPercent);
+  cameraXValue.textContent = `${xPercent}%`;
+  cameraYValue.textContent = `${yPercent}%`;
+  cameraSizeValue.textContent = `${cameraSize.value}%`;
+}
+
+function savePresenterSettings() {
+  try {
+    localStorage.setItem(PRESENTER_SETTINGS_KEY, JSON.stringify({
+      x: presenterPosition.x,
+      y: presenterPosition.y,
+      size: Number(cameraSize.value),
+    }));
+  } catch (error) {
+    console.warn('Presenter settings save failed:', error);
   }
+}
+
+function loadPresenterSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PRESENTER_SETTINGS_KEY) || 'null');
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      presenterPosition = {
+        x: clamp(Number(saved.x), 0, 1),
+        y: clamp(Number(saved.y), 0, 1),
+      };
+    }
+    if (saved && Number.isFinite(saved.size)) {
+      cameraSize.value = String(clamp(Number(saved.size), Number(cameraSize.min), Number(cameraSize.max)));
+    }
+  } catch (error) {
+    console.warn('Presenter settings load failed:', error);
+  }
+  cameraPosition.value = 'custom';
+  syncPresenterControls();
+}
+
+function setPresenterPosition(x, y, save = true) {
+  presenterPosition = {
+    x: clamp(Number(x), 0, 1),
+    y: clamp(Number(y), 0, 1),
+  };
+  cameraPosition.value = 'custom';
+  syncPresenterControls();
+  updatePositionOverlay();
+  if (save) savePresenterSettings();
+}
+
+function applyPositionPreset(position, save = true) {
+  const width = canvas.width * (Number(cameraSize.value) / 100);
+  const ratio = cameraShape.value === 'circle'
+    ? 1
+    : (cameraVideo.videoWidth && cameraVideo.videoHeight
+      ? cameraVideo.videoHeight / cameraVideo.videoWidth
+      : 9 / 16);
+  const height = width * ratio;
+  const margin = 28;
+  const leftX = (margin + width / 2) / canvas.width;
+  const rightX = (canvas.width - margin - width / 2) / canvas.width;
+  const topY = (margin + height / 2) / canvas.height;
+  const bottomY = (canvas.height - margin - height / 2) / canvas.height;
+
+  switch (position) {
+    case 'top-left': presenterPosition = { x: leftX, y: topY }; break;
+    case 'top-right': presenterPosition = { x: rightX, y: topY }; break;
+    case 'bottom-left': presenterPosition = { x: leftX, y: bottomY }; break;
+    case 'bottom-right': presenterPosition = { x: rightX, y: bottomY }; break;
+    default: return;
+  }
+  cameraPosition.value = position;
+  syncPresenterControls();
+  updatePositionOverlay();
+  if (save) savePresenterSettings();
+}
+
+function canEditPresenterPosition() {
+  return previewActive
+    && positionEditEnabled.checked
+    && !positionEditEnabled.disabled
+    && cameraEnabled.checked
+    && activeScene !== 'screen'
+    && activeScene !== 'camera'
+    && (!mediaRecorder || mediaRecorder.state !== 'recording');
+}
+
+function updatePositionEditState() {
+  const editing = canEditPresenterPosition();
+  positionEditLabel.textContent = positionEditEnabled.checked ? (editing ? '조정 중' : '대기') : '잠금';
+  canvas.classList.toggle('position-editing', editing);
+  if (!editing) {
+    canvas.classList.remove('presenter-hover', 'dragging-presenter');
+    presenterDrag = null;
+  }
+  updatePositionOverlay();
+}
+
+function updatePositionOverlay() {
+  if (!positionOverlay) return;
+  const visible = canEditPresenterPosition();
+  positionOverlay.classList.toggle('hidden', !visible);
+  if (!visible) return;
+  const rect = cameraRect();
+  positionOverlay.style.left = `${(rect.x / canvas.width) * 100}%`;
+  positionOverlay.style.top = `${(rect.y / canvas.height) * 100}%`;
+  positionOverlay.style.width = `${(rect.width / canvas.width) * 100}%`;
+  positionOverlay.style.height = `${(rect.height / canvas.height) * 100}%`;
+  positionOverlay.style.borderRadius = cameraShape.value === 'circle' ? '50%' : (cameraShape.value === 'rectangle' ? '4px' : '12px');
+}
+
+function canvasPoint(event) {
+  const bounds = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - bounds.left) * (canvas.width / bounds.width),
+    y: (event.clientY - bounds.top) * (canvas.height / bounds.height),
+  };
+}
+
+function pointInsideRect(point, rect) {
+  return point.x >= rect.x
+    && point.x <= rect.x + rect.width
+    && point.y >= rect.y
+    && point.y <= rect.y + rect.height;
 }
 
 function resizeCameraWorkCanvases() {
@@ -404,6 +553,7 @@ function drawLoop(now = performance.now()) {
     if (activeScene !== 'screen') drawCameraInto(cameraRect());
   }
 
+  updatePositionOverlay();
   drawFrameId = requestAnimationFrame(drawLoop);
 }
 
@@ -720,6 +870,9 @@ async function startRecording() {
     stopButton.disabled = false;
     markerButton.disabled = false;
     previewButton.disabled = true;
+    positionEditEnabled.checked = false;
+    positionEditEnabled.disabled = true;
+    updatePositionEditState();
     setStatus('● 녹화 중', true);
     setMessage(outputMode === 'direct'
       ? `녹화 중 · ${currentFileName}에 직접 기록합니다.`
@@ -753,6 +906,8 @@ async function stopRecording() {
 
   recordButton.disabled = false;
   previewButton.disabled = false;
+  positionEditEnabled.disabled = false;
+  updatePositionEditState();
   setStatus('미리보기');
   setMessage(`저장 완료: ${fileName}${recordingMarkers.length ? ` · 마커 ${recordingMarkers.length}개` : ''}`);
 }
@@ -778,7 +933,7 @@ function setPositionByShortcut(number) {
     '3': 'bottom-left',
     '4': 'bottom-right',
   };
-  if (map[number]) cameraPosition.value = map[number];
+  if (map[number]) applyPositionPreset(map[number]);
 }
 
 function updateBackgroundControls() {
@@ -822,14 +977,85 @@ recordButton.addEventListener('click', () => guarded(startRecording));
 stopButton.addEventListener('click', () => guarded(stopRecording));
 markerButton.addEventListener('click', addMarker);
 refreshDevicesButton.addEventListener('click', () => guarded(() => refreshDevices(true)));
-sceneButtons.forEach((button) => button.addEventListener('click', () => applyScene(button.dataset.scene)));
-cameraSize.addEventListener('input', () => { cameraSizeValue.textContent = `${cameraSize.value}%`; });
+sceneButtons.forEach((button) => button.addEventListener('click', () => {
+  applyScene(button.dataset.scene);
+  savePresenterSettings();
+  updatePositionEditState();
+}));
+cameraSize.addEventListener('input', () => {
+  cameraSizeValue.textContent = `${cameraSize.value}%`;
+  savePresenterSettings();
+  updatePositionOverlay();
+});
+cameraX.addEventListener('input', () => setPresenterPosition(Number(cameraX.value) / 100, presenterPosition.y));
+cameraY.addEventListener('input', () => setPresenterPosition(presenterPosition.x, Number(cameraY.value) / 100));
+cameraPosition.addEventListener('change', () => {
+  if (cameraPosition.value !== 'custom') applyPositionPreset(cameraPosition.value);
+});
+positionEditEnabled.addEventListener('change', updatePositionEditState);
+positionResetButton.addEventListener('click', () => {
+  applyPositionPreset('bottom-right');
+  cameraPosition.value = 'custom';
+  setMessage('인물 위치를 기본 위치로 되돌렸습니다.');
+});
+cameraShape.addEventListener('change', updatePositionOverlay);
+
+canvas.addEventListener('pointerdown', (event) => {
+  if (!canEditPresenterPosition()) return;
+  const rect = cameraRect();
+  const point = canvasPoint(event);
+  if (!pointInsideRect(point, rect)) return;
+  presenterDrag = {
+    pointerId: event.pointerId,
+    offsetX: point.x - (rect.x + rect.width / 2),
+    offsetY: point.y - (rect.y + rect.height / 2),
+  };
+  canvas.setPointerCapture(event.pointerId);
+  canvas.classList.add('dragging-presenter');
+  event.preventDefault();
+});
+
+canvas.addEventListener('pointermove', (event) => {
+  if (!canEditPresenterPosition()) {
+    canvas.classList.remove('presenter-hover');
+    return;
+  }
+
+  const point = canvasPoint(event);
+  if (presenterDrag && presenterDrag.pointerId === event.pointerId) {
+    setPresenterPosition(
+      (point.x - presenterDrag.offsetX) / canvas.width,
+      (point.y - presenterDrag.offsetY) / canvas.height,
+      false,
+    );
+    return;
+  }
+
+  canvas.classList.toggle('presenter-hover', pointInsideRect(point, cameraRect()));
+});
+
+function finishPresenterDrag(event) {
+  if (!presenterDrag || presenterDrag.pointerId !== event.pointerId) return;
+  try { canvas.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+  presenterDrag = null;
+  canvas.classList.remove('dragging-presenter');
+  savePresenterSettings();
+  updatePositionOverlay();
+}
+
+canvas.addEventListener('pointerup', finishPresenterDrag);
+canvas.addEventListener('pointercancel', finishPresenterDrag);
+canvas.addEventListener('pointerleave', () => {
+  if (!presenterDrag) canvas.classList.remove('presenter-hover');
+});
+
 backgroundMode.addEventListener('change', updateBackgroundControls);
 backgroundImageInput.addEventListener('change', () => loadBackgroundImage(backgroundImageInput.files?.[0]));
 
 cameraEnabled.addEventListener('change', () => {
   if (!cameraEnabled.checked && activeScene !== 'screen') applyScene('screen');
   if (cameraEnabled.checked && activeScene === 'screen') applyScene('small');
+  updatePositionEditState();
 });
 
 window.addEventListener('keydown', (event) => {
@@ -840,6 +1066,8 @@ window.addEventListener('keydown', (event) => {
   if (sceneMap[event.key]) {
     event.preventDefault();
     applyScene(sceneMap[event.key]);
+    savePresenterSettings();
+    updatePositionEditState();
     return;
   }
 
@@ -873,6 +1101,8 @@ saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이�
     return;
   }
   applyScene('small');
+  loadPresenterSettings();
+  updatePositionEditState();
   updateBackgroundControls();
   await guarded(() => refreshDevices(true));
 })();
