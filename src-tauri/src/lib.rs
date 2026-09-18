@@ -382,7 +382,7 @@ async fn native_rvm_prepare(app: tauri::AppHandle) -> RvmRuntimeInfo {
         }
 
         let state = app.state::<NativeState>();
-        match ensure_rvm_engine(&app, &state) {
+        let result = match ensure_rvm_engine(&app, &state) {
             Ok(guard) => {
                 let provider = guard
                     .as_ref()
@@ -407,7 +407,8 @@ async fn native_rvm_prepare(app: tauri::AppHandle) -> RvmRuntimeInfo {
                 input_width: RVM_INPUT_WIDTH,
                 input_height: RVM_INPUT_HEIGHT,
             },
-        }
+        };
+        result
     }
 
     #[cfg(not(target_os = "windows"))]
