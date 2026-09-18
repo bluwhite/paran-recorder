@@ -105,10 +105,20 @@
           </select>
         </label>
 
-        <div class="info-box field-note ai-engine-note">
+        <label class="field">
+          <span>AI 배경 엔진</span>
+          <select id="aiEngineSelect">
+            <option value="mediapipe">MediaPipe · Web</option>
+            <option id="nativeOnnxOption" value="native-onnx" hidden>ONNX Runtime Native · MODNet</option>
+          </select>
+        </label>
+
+        <div id="aiEngineNote" class="info-box field-note ai-engine-note">
           <strong>AI 배경 제거 · MediaPipe</strong>
           <span>빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.</span>
         </div>
+
+        <div id="nativeEngineInfo" class="native-engine-info hidden">Native ONNX Runtime 준비 상태 확인 중</div>
 
         <details id="mediaPipeAdvanced" class="advanced-settings">
           <summary>
