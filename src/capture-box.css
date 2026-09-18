@@ -1,0 +1,60 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, Pretendard, "Noto Sans KR", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+.capture-frame {
+  position: absolute;
+  inset: 0;
+  border: 3px solid #38bdf8;
+  box-shadow:
+    inset 0 0 0 1px rgba(15, 23, 42, .9),
+    0 0 0 1px rgba(15, 23, 42, .65);
+  pointer-events: none;
+}
+.drag-strip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 32px;
+  min-width: 275px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 11px;
+  border-radius: 0 0 9px 0;
+  background: rgba(2, 132, 199, .92);
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: auto;
+  user-select: none;
+}
+.drag-strip span {
+  opacity: .82;
+  font-size: 9px;
+  font-weight: 650;
+}
+.corner {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-color: white;
+  border-style: solid;
+  opacity: .95;
+}
+.top-left { left: -1px; top: -1px; border-width: 4px 0 0 4px; }
+.top-right { right: -1px; top: -1px; border-width: 4px 4px 0 0; }
+.bottom-left { left: -1px; bottom: -1px; border-width: 0 0 4px 4px; }
+.bottom-right { right: -1px; bottom: -1px; border-width: 0 4px 4px 0; }
+body:not(.editable) .drag-strip span { display: none; }
+body:not(.editable) .drag-strip {
+  background: rgba(2, 132, 199, .72);
+}
