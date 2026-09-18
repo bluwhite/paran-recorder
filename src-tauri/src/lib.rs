@@ -5,8 +5,13 @@ use tauri::Manager;
 #[cfg(target_os = "windows")]
 use ort::{ep::DirectML, session::Session, value::Tensor};
 
-const MODEL_NAME: &str = "MODNet";
-const MODEL_RELATIVE_PATH: &str = "models/modnet.onnx";
+const MODEL_NAME: &str = "PP-HumanSegV2-Lite";
+const MODEL_RELATIVE_PATH: &str = "models/pp_humanseg_v2_lite.onnx";
+const INPUT_WIDTH: usize = 256;
+const INPUT_HEIGHT: usize = 144;
+const STRONG_CORE_THRESHOLD: f32 = 0.94;
+const ERODE_RADIUS: isize = 2;
+const DILATE_RADIUS: isize = 12;
 
 #[derive(Default)]
 struct NativeState {
@@ -39,7 +44,10 @@ fn model_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|error| format!("리소스 폴더를 찾을 수 없습니다: {error}"))?;
     let path = base.join(MODEL_RELATIVE_PATH);
     if !path.exists() {
-        return Err(format!("MODNet 모델 파일이 없습니다: {}", path.display()));
+        return Err(format!(
+            "PP-HumanSegV2-Lite ONNX 모델 파일이 없습니다: {}",
+            path.display()
+        ));
     }
     Ok(path)
 }
@@ -111,8 +119,8 @@ fn native_runtime_info(
                     provider,
                     model: MODEL_NAME.to_string(),
                     message: "ONNX Runtime Native 준비 완료".to_string(),
-                    input_width: 384,
-                    input_height: 224,
+                    input_width: INPUT_WIDTH,
+                    input_height: INPUT_HEIGHT,
                 }
             }
             Err(error) => NativeRuntimeInfo {
@@ -120,8 +128,8 @@ fn native_runtime_info(
                 provider: "Unavailable".to_string(),
                 model: MODEL_NAME.to_string(),
                 message: error,
-                input_width: 384,
-                input_height: 224,
+                input_width: INPUT_WIDTH,
+                input_height: INPUT_HEIGHT,
             },
         }
     }
@@ -133,9 +141,9 @@ fn native_runtime_info(
             available: false,
             provider: "Unsupported".to_string(),
             model: MODEL_NAME.to_string(),
-            message: "현재 프로토타입은 Windows에서만 ONNX Runtime Native를 지원합니다.".to_string(),
-            input_width: 384,
-            input_height: 224,
+            message: "현재 네이티브 ONNX 프로토타입은 Windows에서만 지원합니다.".to_string(),
+            input_width: INPUT_WIDTH,
+            input_height: INPUT_HEIGHT,
         }
     }
 }
@@ -151,6 +159,94 @@ fn request_dimension(request: &tauri::ipc::Request, name: &'static str) -> Resul
         .map_err(|_| format!("헤더 숫자 형식이 잘못되었습니다: {name}"))
 }
 
+fn erode_cross(source: &[u8], width: usize, height: usize, radius: isize) -> Vec<u8> {
+    let mut output = vec![0u8; source.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut keep = source[y * width + x] != 0;
+            if !keep {
+                continue;
+            }
+            for delta in -radius..=radius {
+                let xx = x as isize + delta;
+                let yy = y as isize + delta;
+                if xx < 0
+                    || xx >= width as isize
+                    || yy < 0
+                    || yy >= height as isize
+                    || source[y * width + xx as usize] == 0
+                    || source[yy as usize * width + x] == 0
+                {
+                    keep = false;
+                    break;
+                }
+            }
+            if keep {
+                output[y * width + x] = 1;
+            }
+        }
+    }
+    output
+}
+
+fn dilate_cross(source: &[u8], width: usize, height: usize, radius: isize) -> Vec<u8> {
+    let mut output = vec![0u8; source.len()];
+    for y in 0..height {
+        for x in 0..width {
+            if source[y * width + x] == 0 {
+                continue;
+            }
+            for delta in -radius..=radius {
+                let xx = x as isize + delta;
+                let yy = y as isize + delta;
+                if xx >= 0 && xx < width as isize {
+                    output[y * width + xx as usize] = 1;
+                }
+                if yy >= 0 && yy < height as isize {
+                    output[yy as usize * width + x] = 1;
+                }
+            }
+        }
+    }
+    output
+}
+
+fn pp_humanseg_alpha(
+    values: &[f32],
+    plane: usize,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, String> {
+    let human = if values.len() == plane * 2 {
+        &values[plane..(plane * 2)]
+    } else if values.len() == plane {
+        values
+    } else {
+        return Err(format!(
+            "PP-HumanSeg 출력 크기가 예상과 다릅니다: {} / {} 또는 {}",
+            values.len(),
+            plane,
+            plane * 2
+        ));
+    };
+
+    let strong: Vec<u8> = human
+        .iter()
+        .map(|&value| u8::from(value >= STRONG_CORE_THRESHOLD))
+        .collect();
+    let eroded = erode_cross(&strong, width, height, ERODE_RADIUS);
+    let gate = dilate_cross(&eroded, width, height, DILATE_RADIUS);
+    let has_gate = gate.iter().any(|&value| value != 0);
+
+    let mut alpha = Vec::with_capacity(plane);
+    for i in 0..plane {
+        let value = human[i].clamp(0.0, 1.0);
+        let cleaned = if !has_gate || gate[i] != 0 { value } else { 0.0 };
+        alpha.push((cleaned * 255.0).round() as u8);
+    }
+    Ok(alpha)
+}
+
 #[tauri::command]
 fn native_segment(
     request: tauri::ipc::Request,
@@ -162,11 +258,11 @@ fn native_segment(
         let width = request_dimension(&request, "x-width")?;
         let height = request_dimension(&request, "x-height")?;
 
-        if width < 64 || height < 64 || width > 1280 || height > 720 {
-            return Err(format!("지원하지 않는 입력 크기입니다: {width}x{height}"));
-        }
-        if width % 32 != 0 || height % 32 != 0 {
-            return Err("MODNet 입력 크기는 32의 배수여야 합니다.".to_string());
+        if width != INPUT_WIDTH || height != INPUT_HEIGHT {
+            return Err(format!(
+                "PP-HumanSegV2-Lite 입력은 {}x{}여야 합니다: {}x{}",
+                INPUT_WIDTH, INPUT_HEIGHT, width, height
+            ));
         }
 
         let tauri::ipc::InvokeBody::Raw(rgba) = request.body() else {
@@ -210,20 +306,7 @@ fn native_segment(
             .try_extract_tensor::<f32>()
             .map_err(|error| format!("ONNX 출력 마스크 읽기 실패: {error}"))?;
 
-        if values.len() != plane {
-            return Err(format!(
-                "ONNX 출력 크기가 예상과 다릅니다: {} / {}",
-                values.len(),
-                plane
-            ));
-        }
-
-        let mut alpha = Vec::with_capacity(plane);
-        for &value in values {
-            let clamped = value.clamp(0.0, 1.0);
-            alpha.push((clamped * 255.0).round() as u8);
-        }
-
+        let alpha = pp_humanseg_alpha(values, plane, width, height)?;
         return Ok(tauri::ipc::Response::new(alpha));
     }
 
