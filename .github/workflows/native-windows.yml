@@ -7,6 +7,7 @@ on:
     paths:
       - "src-tauri/**"
       - "src/native-onnx-engine.js"
+      - "src/native-rvm-engine.js"
       - "src/segmentation.js"
       - "src/renderer.js"
       - "src/index.html"
@@ -83,12 +84,18 @@ jobs:
           }
 
           @"
-          Paran Recorder Native Test - PP-HumanSegV2-Lite
+          Paran Recorder Native Test
 
           1. Keep all files in this folder together.
           2. Run ParanRecorder.exe.
-          3. In AI background engine, choose ONNX Runtime Native · PP-HumanSegV2.
-          4. Compare it with MediaPipe using the same camera and lighting.
+          3. Available engines:
+             - MediaPipe · Web
+             - ONNX Runtime Native · PP-HumanSegV2
+             - ONNX Runtime Native · RVM (personal local test)
+          4. RVM is NOT bundled in this ZIP. The first time you select RVM, the app downloads
+             the official GPL-3.0 rvm_mobilenetv3_fp32.onnx (~15 MB) directly from the
+             PeterL1n/RobustVideoMatting v1.0.0 GitHub release into local app data.
+          5. The downloaded RVM model is intended here for personal local testing.
 
           This test build requires Microsoft Edge WebView2 Runtime.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
