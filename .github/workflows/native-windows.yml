@@ -44,7 +44,7 @@ jobs:
           path: src-tauri/resources/models
           repository: bluwhite/paran-recorder
           run-id: 35310532539
-          github-token: \${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify native model
         run: npm run native:model
