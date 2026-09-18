@@ -31,6 +31,7 @@
 
       <div class="canvas-wrap">
         <canvas id="previewCanvas" width="1280" height="720"></canvas>
+        <div id="positionOverlay" class="position-overlay hidden" aria-hidden="true"><span>드래그</span></div>
         <div id="emptyPreview" class="empty-preview">
           <strong>미리보기를 시작하세요</strong>
           <span>버튼을 누르면 브라우저의 화면 선택 창이 열립니다.</span>
@@ -206,14 +207,41 @@
         </label>
 
         <label class="field">
-          <span>얼굴 위치</span>
+          <span>빠른 위치</span>
           <select id="cameraPosition">
+            <option value="custom">사용자 위치</option>
             <option value="bottom-right">오른쪽 아래</option>
             <option value="bottom-left">왼쪽 아래</option>
             <option value="top-right">오른쪽 위</option>
             <option value="top-left">왼쪽 위</option>
           </select>
         </label>
+
+        <details id="presenterPositionSettings" class="advanced-settings presenter-position-settings">
+          <summary>
+            <span>인물 위치 조정</span>
+            <small id="positionEditLabel">잠금</small>
+          </summary>
+          <div class="advanced-body">
+            <label class="check-row position-edit-toggle">
+              <input id="positionEditEnabled" type="checkbox">
+              <span>미리보기에서 얼굴을 드래그하여 이동</span>
+            </label>
+
+            <label class="field compact-field">
+              <span class="range-title">가로 위치 <b id="cameraXValue">86%</b></span>
+              <input id="cameraX" type="range" min="0" max="100" step="1" value="86">
+            </label>
+
+            <label class="field compact-field">
+              <span class="range-title">세로 위치 <b id="cameraYValue">84%</b></span>
+              <input id="cameraY" type="range" min="0" max="100" step="1" value="84">
+            </label>
+
+            <button id="positionResetButton" class="button subtle full" type="button">위치 초기화</button>
+            <small class="position-help">조정 모드에서 점선으로 표시된 얼굴 영역을 끌어 옮길 수 있습니다. 위치와 크기는 자동 저장됩니다.</small>
+          </div>
+        </details>
 
         <label class="field">
           <span>얼굴 크기 <b id="cameraSizeValue">24%</b></span>
