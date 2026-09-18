@@ -1,6 +1,8 @@
 const INPUT_WIDTH = 256;
 const INPUT_HEIGHT = 144;
-const MIN_IDLE_MS = 2;
+const MIN_IDLE_MS = 0;
+const WEAK_ALPHA_LIMIT = 96;
+const WEAK_NEIGHBOR_THRESHOLD = 48;
 
 function tauriInvoke() {
   return window.__TAURI__?.core?.invoke || null;
@@ -14,6 +16,62 @@ function normalizeBinaryResponse(value) {
   }
   if (Array.isArray(value)) return Uint8Array.from(value);
   throw new Error('네이티브 마스크 응답 형식을 확인할 수 없습니다.');
+}
+
+function cleanWeakSpeckles(source, width, height) {
+  const output = source.slice();
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const value = source[index];
+      if (value === 0 || value > WEAK_ALPHA_LIMIT) continue;
+
+      let neighbors = 0;
+      for (let yy = y - 1; yy <= y + 1; yy += 1) {
+        const row = yy * width;
+        for (let xx = x - 1; xx <= x + 1; xx += 1) {
+          if (xx === x && yy === y) continue;
+          if (source[row + xx] >= WEAK_NEIGHBOR_THRESHOLD) neighbors += 1;
+        }
+      }
+
+      if (neighbors <= 2) output[index] = 0;
+    }
+  }
+
+  return output;
+}
+
+function stabilizeEdgeAlpha(current, previous) {
+  if (!previous || previous.length !== current.length) return current.slice();
+
+  const output = new Uint8Array(current.length);
+  for (let i = 0; i < current.length; i += 1) {
+    const now = current[i];
+    const before = previous[i];
+
+    let previousWeight;
+    if (now > before + 18) {
+      // New subject pixels should appear almost immediately.
+      previousWeight = 0.04;
+    } else if (before > now + 18) {
+      // Keep a very small release tail to stop edge blinking.
+      previousWeight = 0.16;
+    } else if ((now > 8 && now < 230) || (before > 8 && before < 230)) {
+      // Small changes in the uncertain edge band are the main source of shimmer.
+      previousWeight = 0.32;
+    } else {
+      previousWeight = 0.08;
+    }
+
+    let value = Math.round((now * (1 - previousWeight)) + (before * previousWeight));
+    if (value < 10) value = 0;
+    else if (value > 247) value = 255;
+    output[i] = value;
+  }
+
+  return output;
 }
 
 export function isNativeOnnxAvailable() {
@@ -46,6 +104,7 @@ export class NativeOnnxSegmenter {
     this.lastStatusAt = 0;
     this.framesSinceStatus = 0;
     this.lastInferenceMs = 0;
+    this.previousMask = null;
   }
 
   async ensureReady() {
@@ -125,10 +184,14 @@ export class NativeOnnxSegmenter {
         throw new Error(`네이티브 마스크 크기가 올바르지 않습니다. ${bytes.length} / ${expected}`);
       }
 
+      const cleaned = cleanWeakSpeckles(bytes, INPUT_WIDTH, INPUT_HEIGHT);
+      const stabilized = stabilizeEdgeAlpha(cleaned, this.previousMask);
+      this.previousMask = stabilized;
+
       this.latestMask = {
         width: INPUT_WIDTH,
         height: INPUT_HEIGHT,
-        data: bytes,
+        data: stabilized,
         format: 'alpha8',
       };
 
@@ -167,6 +230,7 @@ export class NativeOnnxSegmenter {
     this.lastStatusAt = 0;
     this.framesSinceStatus = 0;
     this.lastInferenceMs = 0;
+    this.previousMask = null;
     this.onStatus('AI 대기');
   }
 }
