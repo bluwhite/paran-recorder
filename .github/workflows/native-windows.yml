@@ -16,81 +16,10 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  convert-model:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Prepare PaddleSeg export environment
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 --branch release/2.10 https://github.com/PaddlePaddle/PaddleSeg.git paddle-seg
-          python -m pip install --upgrade pip
-          python -m pip install "numpy<2" "paddlepaddle==2.6.2" "paddle2onnx==1.3.1" packaging
-          python -m pip install -r paddle-seg/requirements.txt
-
-      - name: Download PP-HumanSegV2-Lite checkpoint
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p checkpoint
-          curl -L --fail \
-            "https://paddleseg.bj.bcebos.com/dygraph/pp_humanseg_v2/portrait_pp_humansegv2_lite_256x144_smaller/portrait_pp_humansegv2_lite_256x144_pretrained.zip" \
-            -o checkpoint/model.zip
-          unzip -q checkpoint/model.zip -d checkpoint/unpacked
-          find checkpoint/unpacked -maxdepth 4 -type f -print
-
-          model_path="$(find checkpoint/unpacked -type f -name '*.pdparams' | head -n 1)"
-          test -n "$model_path"
-          echo "PPHUMANSEG_MODEL_PATH=$GITHUB_WORKSPACE/$model_path" >> "$GITHUB_ENV"
-
-      - name: Export fixed-shape Paddle inference model
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd paddle-seg
-          PYTHONPATH="$PWD" python tools/export.py \
-            --config contrib/PP-HumanSeg/configs/portrait_pp_humansegv2_lite.yml \
-            --model_path "$PPHUMANSEG_MODEL_PATH" \
-            --save_dir "$GITHUB_WORKSPACE/static-model" \
-            --input_shape 1 3 144 256 \
-            --output_op softmax
-          find "$GITHUB_WORKSPACE/static-model" -maxdepth 2 -type f -print
-
-      - name: Convert fixed-shape model to ONNX
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p converted-model
-          paddle2onnx \
-            --model_dir static-model \
-            --model_filename model.pdmodel \
-            --params_filename model.pdiparams \
-            --save_file converted-model/pp_humanseg_v2_lite.onnx \
-            --opset_version 11 \
-            --enable_onnx_checker True
-          test $(stat -c%s converted-model/pp_humanseg_v2_lite.onnx) -gt 1000000
-          ls -lh converted-model/pp_humanseg_v2_lite.onnx
-
-      - name: Upload converted ONNX model
-        uses: actions/upload-artifact@v4
-        with:
-          name: PP-HumanSegV2-Lite-ONNX
-          path: converted-model/pp_humanseg_v2_lite.onnx
-          if-no-files-found: error
-
   build:
-    needs: convert-model
     runs-on: windows-latest
 
     steps:
@@ -108,11 +37,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download converted PP-HumanSegV2 ONNX
+      - name: Reuse converted PP-HumanSegV2 ONNX
         uses: actions/download-artifact@v4
         with:
           name: PP-HumanSegV2-Lite-ONNX
           path: src-tauri/resources/models
+          repository: bluwhite/paran-recorder
+          run-id: 35310532539
+          github-token: \${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify native model
         run: npm run native:model
