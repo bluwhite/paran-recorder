@@ -33,9 +33,6 @@
     "category": "Education",
     "resources": {
       "resources/": ""
-    },
-    "windows": {
-      "bundleVCRuntime": true
     }
   }
 }
