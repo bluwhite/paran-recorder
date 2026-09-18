@@ -550,7 +550,7 @@ export class PersonSegmenter {
       if (!info?.available) return;
       nativeOption.hidden = false;
       if (nativeInfo) {
-        nativeInfo.textContent = `Native: ${info.provider || 'ONNX Runtime'} · ${info.model || 'MODNet'}`;
+        nativeInfo.textContent = `Native: ${info.provider || 'ONNX Runtime'} · ${info.model || 'PP-HumanSegV2-Lite'}`;
       }
       refreshUi();
     }).catch((error) => {
