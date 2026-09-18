@@ -134,3 +134,36 @@ input[type="range"] { accent-color: #3b82f6; }
   .settings-panel { display: block; }
   .scene-bar { grid-template-columns: repeat(2, 1fr); }
 }
+
+.position-overlay {
+  position: absolute;
+  z-index: 3;
+  border: 2px dashed rgba(96, 165, 250, .95);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, .72), 0 0 24px rgba(37, 99, 235, .22);
+  pointer-events: none;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.position-overlay span {
+  position: absolute;
+  right: 5px;
+  top: -24px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, .92);
+  color: #bfdbfe;
+  border: 1px solid rgba(96, 165, 250, .35);
+  font-size: 9px;
+  font-weight: 800;
+}
+#previewCanvas.position-editing { cursor: default; }
+#previewCanvas.presenter-hover { cursor: grab; }
+#previewCanvas.dragging-presenter { cursor: grabbing !important; }
+.position-edit-toggle { margin: 11px 0 14px; }
+.position-help {
+  display: block;
+  margin-top: 9px;
+  color: #74869f;
+  font-size: 10px;
+  line-height: 1.4;
+}
