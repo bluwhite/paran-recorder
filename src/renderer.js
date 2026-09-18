@@ -203,7 +203,7 @@ function resizeCameraWorkCanvases() {
 
 function updateMaskCanvas() {
   if (!latestMask || renderedMaskVersion === maskImageVersion) return;
-  const { width, height, data } = latestMask;
+  const { width, height, data, format } = latestMask;
   if (maskCanvas.width !== width || maskCanvas.height !== height) {
     maskCanvas.width = width;
     maskCanvas.height = height;
@@ -211,13 +211,17 @@ function updateMaskCanvas() {
 
   const pixels = new Uint8ClampedArray(width * height * 4);
   for (let i = 0; i < data.length; i += 1) {
-    const confidence = Math.max(0, Math.min(1, (data[i] - 0.12) / 0.76));
-    const smooth = confidence * confidence * (3 - 2 * confidence);
     const offset = i * 4;
     pixels[offset] = 255;
     pixels[offset + 1] = 255;
     pixels[offset + 2] = 255;
-    pixels[offset + 3] = Math.round(smooth * 255);
+    if (format === 'alpha8') {
+      pixels[offset + 3] = data[i];
+    } else {
+      const confidence = Math.max(0, Math.min(1, (data[i] - 0.12) / 0.76));
+      const smooth = confidence * confidence * (3 - 2 * confidence);
+      pixels[offset + 3] = Math.round(smooth * 255);
+    }
   }
   maskCtx.putImageData(new ImageData(pixels, width, height), 0, 0);
   renderedMaskVersion = maskImageVersion;
@@ -230,7 +234,7 @@ async function ensureSegmenter() {
 
 function requestSegmentation(now) {
   if (backgroundMode.value === 'original' || !cameraStream || cameraVideo.readyState < 2) return;
-  if (segmentBusy || now - lastSegmentAt < 70) return;
+  if (segmentBusy || now - lastSegmentAt < 30) return;
   lastSegmentAt = now;
   segmentBusy = true;
 
