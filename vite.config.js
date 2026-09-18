@@ -18,6 +18,7 @@ export default defineConfig({
       input: {
         main: resolve(process.cwd(), 'src/index.html'),
         captureBox: resolve(process.cwd(), 'src/capture-box.html'),
+        captureHandle: resolve(process.cwd(), 'src/capture-handle.html'),
       },
     },
   },
