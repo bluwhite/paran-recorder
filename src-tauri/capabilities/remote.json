@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "remote-web-ui",
+  "description": "Allow the official Paran Recorder web UI to call the native ONNX commands.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["https://bluwhite.github.io/paran-recorder/*"]
+  },
+  "permissions": ["core:default"]
+}
