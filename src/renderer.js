@@ -33,6 +33,10 @@ const recordButton = document.getElementById('recordButton');
 const stopButton = document.getElementById('stopButton');
 const markerButton = document.getElementById('markerButton');
 const refreshDevicesButton = document.getElementById('refreshDevicesButton');
+const captureRegionButton = document.getElementById('captureRegionButton');
+const captureRegionCenterButton = document.getElementById('captureRegionCenterButton');
+const captureRegionEdit = document.getElementById('captureRegionEdit');
+const captureRegionStatus = document.getElementById('captureRegionStatus');
 const sceneButtons = [...document.querySelectorAll('.scene-button')];
 const message = document.getElementById('message');
 const statusBadge = document.getElementById('statusBadge');
@@ -82,15 +86,180 @@ let lastSegmentAt = 0;
 let segmentErrorShown = false;
 let presenterPosition = { x: 0.86, y: 0.84 };
 let presenterDrag = null;
+let captureRegionInfo = null;
+let captureRegionPollTimer = null;
+let captureRegionPolling = false;
 
+const OUTPUT_WIDTH = 1280;
+const OUTPUT_HEIGHT = 720;
+const CAPTURE_REGION_POLL_MS = 80;
 const PRESENTER_SETTINGS_KEY = 'paran-recorder-presenter-v1';
 const PRESENTER_POSITION_MIN = -0.5;
 const PRESENTER_POSITION_MAX = 1.5;
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
+
+function tauriInvoke() {
+  return window.__TAURI__?.core?.invoke || null;
+}
+
 const segmenter = new PersonSegmenter((text) => {
   aiStatus.textContent = text;
   aiStatus.classList.toggle('ready', text.startsWith('AI 준비'));
 });
+
+function updateCaptureRegionUi() {
+  if (!captureRegionStatus || !captureRegionButton || !captureRegionEdit || !captureRegionCenterButton) return;
+
+  if (!isTauri) {
+    captureRegionStatus.textContent = '웹판에서는 선택한 화면의 중앙 1280×720 영역을 녹화합니다. Windows 박스는 EXE에서 표시됩니다.';
+    captureRegionButton.disabled = true;
+    captureRegionCenterButton.disabled = true;
+    captureRegionEdit.disabled = true;
+    return;
+  }
+
+  const visible = Boolean(captureRegionInfo?.visible);
+  captureRegionButton.textContent = visible ? '영역 박스 숨기기' : '영역 박스 표시';
+  captureRegionStatus.textContent = captureRegionInfo
+    ? `현재 위치 · X ${captureRegionInfo.relativeX}px · Y ${captureRegionInfo.relativeY}px · 1280×720`
+    : 'Windows 화면에 1280×720 녹화 영역을 표시합니다.';
+}
+
+async function refreshCaptureRegionInfo() {
+  if (!isTauri || captureRegionPolling) return captureRegionInfo;
+  const invoke = tauriInvoke();
+  if (!invoke) return captureRegionInfo;
+
+  captureRegionPolling = true;
+  try {
+    captureRegionInfo = await invoke('capture_region_info');
+    updateCaptureRegionUi();
+  } catch {
+    captureRegionInfo = null;
+    updateCaptureRegionUi();
+  } finally {
+    captureRegionPolling = false;
+  }
+  return captureRegionInfo;
+}
+
+function startCaptureRegionPolling() {
+  if (!isTauri || captureRegionPollTimer) return;
+  captureRegionPollTimer = window.setInterval(() => {
+    refreshCaptureRegionInfo().catch(() => {});
+  }, CAPTURE_REGION_POLL_MS);
+}
+
+function stopCaptureRegionPolling() {
+  if (captureRegionPollTimer) clearInterval(captureRegionPollTimer);
+  captureRegionPollTimer = null;
+}
+
+async function ensureCaptureRegionVisible() {
+  if (!isTauri) return null;
+  const invoke = tauriInvoke();
+  if (!invoke) return null;
+  captureRegionInfo = await invoke('capture_region_show');
+  captureRegionEdit.checked = false;
+  await invoke('capture_region_set_editable', { editable: false });
+  updateCaptureRegionUi();
+  startCaptureRegionPolling();
+  return captureRegionInfo;
+}
+
+async function toggleCaptureRegion() {
+  if (!isTauri) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+
+  if (captureRegionInfo?.visible) {
+    captureRegionEdit.checked = false;
+    await invoke('capture_region_set_editable', { editable: false });
+    await invoke('capture_region_hide');
+  } else {
+    captureRegionInfo = await invoke('capture_region_show');
+  }
+  await refreshCaptureRegionInfo();
+}
+
+async function setCaptureRegionEditable(editable) {
+  if (!isTauri) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  if (!captureRegionInfo?.visible) captureRegionInfo = await invoke('capture_region_show');
+  await invoke('capture_region_set_editable', { editable });
+  await refreshCaptureRegionInfo();
+  setMessage(editable
+    ? '녹화 영역 박스의 위쪽 표시줄을 끌어 위치를 정하세요. 조정이 끝나면 위치 조정을 끄세요.'
+    : '녹화 영역 위치를 고정했습니다. 박스 안쪽의 프로그램을 다시 조작할 수 있습니다.');
+}
+
+async function centerCaptureRegion() {
+  if (!isTauri) return;
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  captureRegionInfo = await invoke('capture_region_center');
+  updateCaptureRegionUi();
+}
+
+function centeredWebCaptureRect(sourceWidth, sourceHeight) {
+  const scale = Math.min(1, sourceWidth / OUTPUT_WIDTH, sourceHeight / OUTPUT_HEIGHT);
+  const width = Math.max(1, OUTPUT_WIDTH * scale);
+  const height = Math.max(1, OUTPUT_HEIGHT * scale);
+  return {
+    x: (sourceWidth - width) / 2,
+    y: (sourceHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+function captureSourceRect() {
+  const sourceWidth = screenVideo.videoWidth || OUTPUT_WIDTH;
+  const sourceHeight = screenVideo.videoHeight || OUTPUT_HEIGHT;
+  const region = captureRegionInfo;
+
+  if (
+    isTauri
+    && region
+    && region.monitorWidth > 0
+    && region.monitorHeight > 0
+  ) {
+    const scaleX = sourceWidth / region.monitorWidth;
+    const scaleY = sourceHeight / region.monitorHeight;
+    return {
+      x: region.relativeX * scaleX,
+      y: region.relativeY * scaleY,
+      width: region.width * scaleX,
+      height: region.height * scaleY,
+    };
+  }
+
+  return centeredWebCaptureRect(sourceWidth, sourceHeight);
+}
+
+function drawCaptureRegion(context, source) {
+  const sourceWidth = source.videoWidth || OUTPUT_WIDTH;
+  const sourceHeight = source.videoHeight || OUTPUT_HEIGHT;
+  const rect = captureSourceRect();
+
+  context.fillStyle = '#020617';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const sx0 = Math.max(0, rect.x);
+  const sy0 = Math.max(0, rect.y);
+  const sx1 = Math.min(sourceWidth, rect.x + rect.width);
+  const sy1 = Math.min(sourceHeight, rect.y + rect.height);
+  const sw = sx1 - sx0;
+  const sh = sy1 - sy0;
+  if (sw <= 0 || sh <= 0 || rect.width <= 0 || rect.height <= 0) return;
+
+  const dx = ((sx0 - rect.x) / rect.width) * canvas.width;
+  const dy = ((sy0 - rect.y) / rect.height) * canvas.height;
+  const dw = (sw / rect.width) * canvas.width;
+  const dh = (sh / rect.height) * canvas.height;
+  context.drawImage(source, sx0, sy0, sw, sh, dx, dy, dw, dh);
+}
 
 function setMessage(text, isError = false) {
   message.textContent = text || '';
@@ -541,7 +710,7 @@ function drawLoop(now = performance.now()) {
     drawCameraInto(fullRect, true);
   } else {
     if (screenVideo.readyState >= 2) {
-      drawContain(ctx, screenVideo, 0, 0, canvas.width, canvas.height);
+      drawCaptureRegion(ctx, screenVideo);
     } else {
       ctx.fillStyle = '#020617';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -637,6 +806,7 @@ async function startPreview() {
   }
 
   await stopPreview();
+  if (isTauri) await ensureCaptureRegionVisible();
 
   displayStream = await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: 30, max: 60 } },
@@ -647,14 +817,10 @@ async function startPreview() {
 
   const displayTrack = displayStream.getVideoTracks()[0];
   const settings = displayTrack.getSettings();
-  if (settings.width && settings.height) {
-    const ratio = settings.width / settings.height;
-    canvas.width = 1280;
-    canvas.height = Math.round(canvas.width / ratio);
-    if (canvas.height > 900) {
-      canvas.height = 720;
-      canvas.width = Math.round(canvas.height * ratio);
-    }
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+  if (isTauri && settings.displaySurface && settings.displaySurface !== 'monitor') {
+    setMessage('고정 녹화 영역을 정확히 사용하려면 화면 선택 창에서 "전체 화면/모니터"를 선택하세요.');
   }
 
   displayTrack.addEventListener('ended', async () => {
@@ -844,7 +1010,7 @@ async function startRecording() {
 
     mediaRecorder = new MediaRecorder(outputStream, {
       ...(mimeType ? { mimeType } : {}),
-      videoBitsPerSecond: 8_000_000,
+      videoBitsPerSecond: 5_000_000,
       audioBitsPerSecond: 160_000,
     });
 
@@ -870,6 +1036,9 @@ async function startRecording() {
     positionEditEnabled.checked = false;
     positionEditEnabled.disabled = true;
     updatePositionEditState();
+    captureRegionEdit.checked = false;
+    captureRegionEdit.disabled = true;
+    if (isTauri) await setCaptureRegionEditable(false);
     setStatus('● 녹화 중', true);
     setMessage(outputMode === 'direct'
       ? `녹화 중 · ${currentFileName}에 직접 기록합니다.`
@@ -905,6 +1074,7 @@ async function stopRecording() {
   previewButton.disabled = false;
   positionEditEnabled.disabled = false;
   updatePositionEditState();
+  captureRegionEdit.disabled = !isTauri;
   setStatus('미리보기');
   setMessage(`저장 완료: ${fileName}${recordingMarkers.length ? ` · 마커 ${recordingMarkers.length}개` : ''}`);
 }
@@ -974,6 +1144,9 @@ recordButton.addEventListener('click', () => guarded(startRecording));
 stopButton.addEventListener('click', () => guarded(stopRecording));
 markerButton.addEventListener('click', addMarker);
 refreshDevicesButton.addEventListener('click', () => guarded(() => refreshDevices(true)));
+captureRegionButton.addEventListener('click', () => guarded(toggleCaptureRegion));
+captureRegionCenterButton.addEventListener('click', () => guarded(centerCaptureRegion));
+captureRegionEdit.addEventListener('change', () => guarded(() => setCaptureRegionEditable(captureRegionEdit.checked)));
 sceneButtons.forEach((button) => button.addEventListener('click', () => {
   applyScene(button.dataset.scene);
   savePresenterSettings();
@@ -1081,6 +1254,7 @@ window.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', () => {
+  stopCaptureRegionPolling();
   stopTracks(displayStream);
   stopTracks(cameraStream);
   stopTracks(microphoneStream);
@@ -1089,6 +1263,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 runtimeLabel.textContent = isTauri ? 'TAURI 개발판' : 'WEB 개발판';
+updateCaptureRegionUi();
 systemAudioInfo.textContent = '시스템 소리는 화면 선택 창에서 오디오 공유를 켠 경우 함께 녹음됩니다.';
 saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이터를 파일에 바로 기록합니다.';
 
@@ -1101,5 +1276,8 @@ saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이�
   loadPresenterSettings();
   updatePositionEditState();
   updateBackgroundControls();
+  if (isTauri) {
+    await guarded(ensureCaptureRegionVisible);
+  }
   await guarded(() => refreshDevices(true));
 })();
