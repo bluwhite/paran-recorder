@@ -14,6 +14,8 @@ on:
       - "src/styles.css"
       - "src/capture-box.html"
       - "src/capture-box.css"
+      - "src/capture-handle.html"
+      - "src/capture-handle.css"
       - "vite.config.js"
       - "scripts/prepare-native-model.mjs"
       - "package.json"
