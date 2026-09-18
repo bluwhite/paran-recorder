@@ -160,54 +160,101 @@ fn request_dimension(request: &tauri::ipc::Request, name: &'static str) -> Resul
 }
 
 fn erode_cross(source: &[u8], width: usize, height: usize, radius: isize) -> Vec<u8> {
+    let radius = radius.max(0) as usize;
+    let span = (radius * 2) + 1;
+    let mut horizontal = vec![0u8; source.len()];
     let mut output = vec![0u8; source.len()];
+
+    if span > width || span > height {
+        return output;
+    }
+
     for y in 0..height {
-        for x in 0..width {
-            let mut keep = source[y * width + x] != 0;
-            if !keep {
-                continue;
-            }
-            for delta in -radius..=radius {
-                let xx = x as isize + delta;
-                let yy = y as isize + delta;
-                if xx < 0
-                    || xx >= width as isize
-                    || yy < 0
-                    || yy >= height as isize
-                    || source[y * width + xx as usize] == 0
-                    || source[yy as usize * width + x] == 0
-                {
-                    keep = false;
-                    break;
-                }
-            }
-            if keep {
-                output[y * width + x] = 1;
-            }
+        let row = y * width;
+        let mut count = 0usize;
+        for x in 0..span {
+            count += usize::from(source[row + x] != 0);
+        }
+        horizontal[row + radius] = u8::from(count == span);
+
+        for center in (radius + 1)..(width - radius) {
+            count += usize::from(source[row + center + radius] != 0);
+            count -= usize::from(source[row + center - radius - 1] != 0);
+            horizontal[row + center] = u8::from(count == span);
         }
     }
+
+    for x in radius..(width - radius) {
+        let mut count = 0usize;
+        for y in 0..span {
+            count += usize::from(source[y * width + x] != 0);
+        }
+        output[radius * width + x] = u8::from(
+            count == span && horizontal[radius * width + x] != 0
+        );
+
+        for center in (radius + 1)..(height - radius) {
+            count += usize::from(source[(center + radius) * width + x] != 0);
+            count -= usize::from(source[(center - radius - 1) * width + x] != 0);
+            output[center * width + x] = u8::from(
+                count == span && horizontal[center * width + x] != 0
+            );
+        }
+    }
+
     output
 }
 
 fn dilate_cross(source: &[u8], width: usize, height: usize, radius: isize) -> Vec<u8> {
+    let radius = radius.max(0) as usize;
+    let mut horizontal = vec![0u8; source.len()];
     let mut output = vec![0u8; source.len()];
+
     for y in 0..height {
+        let row = y * width;
+        let mut count = 0usize;
+        let initial_right = radius.min(width.saturating_sub(1));
+        for x in 0..=initial_right {
+            count += usize::from(source[row + x] != 0);
+        }
+
         for x in 0..width {
-            if source[y * width + x] == 0 {
-                continue;
-            }
-            for delta in -radius..=radius {
-                let xx = x as isize + delta;
-                let yy = y as isize + delta;
-                if xx >= 0 && xx < width as isize {
-                    output[y * width + xx as usize] = 1;
+            if x > 0 {
+                let add = x + radius;
+                if add < width {
+                    count += usize::from(source[row + add] != 0);
                 }
-                if yy >= 0 && yy < height as isize {
-                    output[yy as usize * width + x] = 1;
+                if x > radius {
+                    count -= usize::from(source[row + x - radius - 1] != 0);
                 }
             }
+            horizontal[row + x] = u8::from(count > 0);
         }
     }
+
+    for x in 0..width {
+        let mut count = 0usize;
+        let initial_bottom = radius.min(height.saturating_sub(1));
+        for y in 0..=initial_bottom {
+            count += usize::from(source[y * width + x] != 0);
+        }
+
+        for y in 0..height {
+            if y > 0 {
+                let add = y + radius;
+                if add < height {
+                    count += usize::from(source[add * width + x] != 0);
+                }
+                if y > radius {
+                    count -= usize::from(source[(y - radius - 1) * width + x] != 0);
+                }
+            }
+            output[y * width + x] = u8::from(
+                horizontal[y * width + x] != 0 || count > 0
+            );
+        }
+    }
+
     output
 }
 
