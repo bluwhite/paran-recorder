@@ -51,7 +51,7 @@ jobs:
           Invoke-WebRequest -Uri "$base/model.pdiparams?download=true" -OutFile "native-model-source/model.pdiparams"
 
           python -m pip install --upgrade pip
-          python -m pip install packaging paddle2onnx
+          python -m pip install packaging paddlepaddle paddle2onnx
 
           paddle2onnx `
             --model_dir native-model-source `
