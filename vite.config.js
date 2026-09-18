@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -13,5 +14,11 @@ export default defineConfig({
     outDir: '../dist',
     emptyOutDir: true,
     sourcemap: true,
+    rollupOptions: {
+      input: {
+        main: resolve(process.cwd(), 'src/index.html'),
+        captureBox: resolve(process.cwd(), 'src/capture-box.html'),
+      },
+    },
   },
 });
