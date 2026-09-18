@@ -1,4 +1,5 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
+import { NativeOnnxSegmenter, isNativeOnnxAvailable, probeNativeOnnx } from './native-onnx-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -483,16 +484,89 @@ class MediaPipePersonSegmenter {
 export class PersonSegmenter {
   constructor(onStatus = () => {}) {
     this.onStatus = onStatus;
-    this.engine = new MediaPipePersonSegmenter(onStatus);
+    this.engine = null;
+    this.engineMode = '';
     bindSettingsUi();
+    this.#wireEngineUi();
+  }
+
+  #selectedMode() {
+    const value = document.getElementById('aiEngineSelect')?.value;
+    return value === 'native-onnx' && isNativeOnnxAvailable()
+      ? 'native-onnx'
+      : 'mediapipe';
+  }
+
+  #getEngine() {
+    const selectedMode = this.#selectedMode();
+    if (this.engine && this.engineMode === selectedMode) return this.engine;
+
+    this.engine?.close?.();
+    this.engineMode = selectedMode;
+    this.engine = selectedMode === 'native-onnx'
+      ? new NativeOnnxSegmenter(this.onStatus)
+      : new MediaPipePersonSegmenter(this.onStatus);
+    return this.engine;
+  }
+
+  #wireEngineUi() {
+    const select = document.getElementById('aiEngineSelect');
+    const nativeOption = document.getElementById('nativeOnnxOption');
+    const advanced = document.getElementById('mediaPipeAdvanced');
+    const engineNote = document.getElementById('aiEngineNote');
+    const nativeInfo = document.getElementById('nativeEngineInfo');
+
+    const refreshUi = () => {
+      const nativeSelected = select?.value === 'native-onnx' && !nativeOption?.hidden;
+      advanced?.classList.toggle('hidden', nativeSelected);
+      if (engineNote) {
+        const strong = engineNote.querySelector('strong');
+        const span = engineNote.querySelector('span');
+        if (strong) strong.textContent = nativeSelected
+          ? 'AI 배경 제거 · ONNX Runtime Native'
+          : 'AI 배경 제거 · MediaPipe';
+        if (span) span.textContent = nativeSelected
+          ? 'Windows 네이티브 ONNX Runtime이 저해상도 카메라 프레임을 GPU에서 처리합니다.'
+          : '빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.';
+      }
+      nativeInfo?.classList.toggle('hidden', !nativeSelected);
+    };
+
+    select?.addEventListener('change', () => {
+      this.engine?.close?.();
+      this.engine = null;
+      this.engineMode = '';
+      refreshUi();
+      this.ensureReady().catch((error) => {
+        console.error('AI engine switch failed:', error);
+        this.onStatus('AI 오류');
+      });
+    });
+
+    refreshUi();
+
+    if (!isNativeOnnxAvailable() || !nativeOption) return;
+    probeNativeOnnx().then((info) => {
+      if (!info?.available) return;
+      nativeOption.hidden = false;
+      if (nativeInfo) {
+        nativeInfo.textContent = `Native: ${info.provider || 'ONNX Runtime'} · ${info.model || 'MODNet'}`;
+      }
+      refreshUi();
+    }).catch((error) => {
+      console.warn('Native ONNX runtime unavailable:', error);
+      nativeOption.hidden = true;
+      if (select?.value === 'native-onnx') select.value = 'mediapipe';
+      refreshUi();
+    });
   }
 
   async ensureReady() {
-    return this.engine.ensureReady();
+    return this.#getEngine().ensureReady();
   }
 
   segment(imageSource, timestampMs = performance.now()) {
-    return this.engine.segment(imageSource, timestampMs);
+    return this.#getEngine().segment(imageSource, timestampMs);
   }
 
   hasBackgroundReference() {
@@ -500,10 +574,12 @@ export class PersonSegmenter {
   }
 
   clearBackgroundReference() {
-    // Kept as a no-op for renderer compatibility after removing reference engines.
+    // Kept as a no-op for renderer compatibility.
   }
 
   close() {
-    this.engine.close();
+    this.engine?.close?.();
+    this.engine = null;
+    this.engineMode = '';
   }
 }
