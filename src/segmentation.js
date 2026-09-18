@@ -1,5 +1,6 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { NativeOnnxSegmenter, isNativeOnnxAvailable, probeNativeOnnx } from './native-onnx-engine.js';
+import { NativeRvmSegmenter, isNativeRvmAvailable, probeNativeRvm } from './native-rvm-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -486,15 +487,17 @@ export class PersonSegmenter {
     this.onStatus = onStatus;
     this.engine = null;
     this.engineMode = '';
+    this.ppInfo = null;
+    this.rvmInfo = null;
     bindSettingsUi();
     this.#wireEngineUi();
   }
 
   #selectedMode() {
     const value = document.getElementById('aiEngineSelect')?.value;
-    return value === 'native-onnx' && isNativeOnnxAvailable()
-      ? 'native-onnx'
-      : 'mediapipe';
+    if (value === 'native-rvm' && isNativeRvmAvailable()) return 'native-rvm';
+    if (value === 'native-onnx' && isNativeOnnxAvailable()) return 'native-onnx';
+    return 'mediapipe';
   }
 
   #getEngine() {
@@ -503,33 +506,57 @@ export class PersonSegmenter {
 
     this.engine?.close?.();
     this.engineMode = selectedMode;
-    this.engine = selectedMode === 'native-onnx'
-      ? new NativeOnnxSegmenter(this.onStatus)
-      : new MediaPipePersonSegmenter(this.onStatus);
+    if (selectedMode === 'native-rvm') {
+      this.engine = new NativeRvmSegmenter(this.onStatus);
+    } else if (selectedMode === 'native-onnx') {
+      this.engine = new NativeOnnxSegmenter(this.onStatus);
+    } else {
+      this.engine = new MediaPipePersonSegmenter(this.onStatus);
+    }
     return this.engine;
   }
 
   #wireEngineUi() {
     const select = document.getElementById('aiEngineSelect');
     const nativeOption = document.getElementById('nativeOnnxOption');
+    const rvmOption = document.getElementById('nativeRvmOption');
     const advanced = document.getElementById('mediaPipeAdvanced');
     const engineNote = document.getElementById('aiEngineNote');
     const nativeInfo = document.getElementById('nativeEngineInfo');
 
     const refreshUi = () => {
-      const nativeSelected = select?.value === 'native-onnx' && !nativeOption?.hidden;
+      const mode = this.#selectedMode();
+      const nativeSelected = mode !== 'mediapipe';
       advanced?.classList.toggle('hidden', nativeSelected);
+
       if (engineNote) {
         const strong = engineNote.querySelector('strong');
         const span = engineNote.querySelector('span');
-        if (strong) strong.textContent = nativeSelected
-          ? 'AI 배경 제거 · ONNX Runtime Native'
-          : 'AI 배경 제거 · MediaPipe';
-        if (span) span.textContent = nativeSelected
-          ? 'Windows 네이티브 ONNX Runtime이 저해상도 카메라 프레임을 GPU에서 처리합니다.'
-          : '빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.';
+
+        if (mode === 'native-rvm') {
+          if (strong) strong.textContent = 'AI 배경 제거 · RVM Native · 개인 테스트';
+          if (span) span.textContent = this.rvmInfo?.downloaded
+            ? 'RVM recurrent video matting을 사용합니다. 프레임 간 상태를 이어서 움직임과 경계의 시간적 일관성을 높입니다.'
+            : '처음 선택하면 공식 RVM GPL-3.0 ONNX 모델 약 15MB를 이 PC에만 내려받습니다.';
+        } else if (mode === 'native-onnx') {
+          if (strong) strong.textContent = 'AI 배경 제거 · PP-HumanSegV2 Native';
+          if (span) span.textContent = 'Windows 네이티브 ONNX Runtime이 저해상도 카메라 프레임을 GPU에서 처리합니다.';
+        } else {
+          if (strong) strong.textContent = 'AI 배경 제거 · MediaPipe';
+          if (span) span.textContent = '빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.';
+        }
       }
+
       nativeInfo?.classList.toggle('hidden', !nativeSelected);
+      if (nativeInfo && nativeSelected) {
+        if (mode === 'native-rvm') {
+          const provider = this.rvmInfo?.provider || '선택 시 초기화';
+          const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
+          nativeInfo.textContent = `RVM: ${provider} · ${localState} · 개인 테스트용`;
+        } else {
+          nativeInfo.textContent = `Native: ${this.ppInfo?.provider || 'ONNX Runtime'} · ${this.ppInfo?.model || 'PP-HumanSegV2-Lite'}`;
+        }
+      }
     };
 
     select?.addEventListener('change', () => {
@@ -537,7 +564,10 @@ export class PersonSegmenter {
       this.engine = null;
       this.engineMode = '';
       refreshUi();
-      this.ensureReady().catch((error) => {
+      this.ensureReady().then((info) => {
+        if (this.#selectedMode() === 'native-rvm' && info) this.rvmInfo = { ...this.rvmInfo, ...info, downloaded: true };
+        refreshUi();
+      }).catch((error) => {
         console.error('AI engine switch failed:', error);
         this.onStatus('AI 오류');
       });
@@ -545,20 +575,31 @@ export class PersonSegmenter {
 
     refreshUi();
 
-    if (!isNativeOnnxAvailable() || !nativeOption) return;
-    probeNativeOnnx().then((info) => {
-      if (!info?.available) return;
-      nativeOption.hidden = false;
-      if (nativeInfo) {
-        nativeInfo.textContent = `Native: ${info.provider || 'ONNX Runtime'} · ${info.model || 'PP-HumanSegV2-Lite'}`;
-      }
-      refreshUi();
-    }).catch((error) => {
-      console.warn('Native ONNX runtime unavailable:', error);
-      nativeOption.hidden = true;
-      if (select?.value === 'native-onnx') select.value = 'mediapipe';
-      refreshUi();
-    });
+    if (isNativeOnnxAvailable() && nativeOption) {
+      probeNativeOnnx().then((info) => {
+        if (!info?.available) return;
+        this.ppInfo = info;
+        nativeOption.hidden = false;
+        refreshUi();
+      }).catch((error) => {
+        console.warn('Native PP-HumanSeg runtime unavailable:', error);
+        nativeOption.hidden = true;
+        if (select?.value === 'native-onnx') select.value = 'mediapipe';
+        refreshUi();
+      });
+    }
+
+    if (isNativeRvmAvailable() && rvmOption) {
+      probeNativeRvm().then((info) => {
+        this.rvmInfo = info || {};
+        rvmOption.hidden = false;
+        refreshUi();
+      }).catch((error) => {
+        console.warn('Native RVM probe failed:', error);
+        rvmOption.hidden = false;
+        refreshUi();
+      });
+    }
   }
 
   async ensureReady() {
