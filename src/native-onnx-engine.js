@@ -1,15 +1,9 @@
-const INPUT_WIDTH = 512;
-const INPUT_HEIGHT = 288;
-const INTERVAL_MS = 45;
+const INPUT_WIDTH = 384;
+const INPUT_HEIGHT = 224;
+const MIN_IDLE_MS = 2;
 
 function tauriInvoke() {
   return window.__TAURI__?.core?.invoke || null;
-}
-
-function encodeAlphaForSharedRenderer(alpha) {
-  const y = Math.max(0, Math.min(1, alpha));
-  const x = 0.5 - Math.sin(Math.asin(1 - (2 * y)) / 3);
-  return 0.12 + (0.76 * x);
 }
 
 function normalizeBinaryResponse(value) {
@@ -49,6 +43,9 @@ export class NativeOnnxSegmenter {
       willReadFrequently: true,
     });
     this.runtimeInfo = null;
+    this.lastStatusAt = 0;
+    this.framesSinceStatus = 0;
+    this.lastInferenceMs = 0;
   }
 
   async ensureReady() {
@@ -95,7 +92,7 @@ export class NativeOnnxSegmenter {
         await this.#processCamera(cameraVideo);
       }
 
-      if (!this.closed) this.timer = setTimeout(tick, INTERVAL_MS);
+      if (!this.closed) this.timer = setTimeout(tick, MIN_IDLE_MS);
     };
 
     this.timer = setTimeout(tick, 0);
@@ -106,6 +103,7 @@ export class NativeOnnxSegmenter {
     if (!invoke || this.processing) return;
 
     this.processing = true;
+    const startedAt = performance.now();
     try {
       this.context.drawImage(cameraVideo, 0, 0, INPUT_WIDTH, INPUT_HEIGHT);
       const rgba = this.context.getImageData(0, 0, INPUT_WIDTH, INPUT_HEIGHT).data;
@@ -127,15 +125,24 @@ export class NativeOnnxSegmenter {
         throw new Error(`네이티브 마스크 크기가 올바르지 않습니다. ${bytes.length} / ${expected}`);
       }
 
-      const encoded = new Float32Array(expected);
-      for (let i = 0; i < expected; i += 1) {
-        encoded[i] = encodeAlphaForSharedRenderer(bytes[i] / 255);
-      }
       this.latestMask = {
         width: INPUT_WIDTH,
         height: INPUT_HEIGHT,
-        data: encoded,
+        data: bytes,
+        format: 'alpha8',
       };
+
+      const now = performance.now();
+      this.lastInferenceMs = now - startedAt;
+      this.framesSinceStatus += 1;
+      if (now - this.lastStatusAt >= 1000) {
+        const elapsedSeconds = this.lastStatusAt > 0 ? (now - this.lastStatusAt) / 1000 : 1;
+        const fps = Math.max(1, Math.round(this.framesSinceStatus / elapsedSeconds));
+        const provider = this.runtimeInfo?.provider || 'ONNX Runtime';
+        this.onStatus(`AI 준비 · ONNX Native · ${provider} · ${Math.round(this.lastInferenceMs)}ms / ${fps}fps`);
+        this.lastStatusAt = now;
+        this.framesSinceStatus = 0;
+      }
     } catch (error) {
       console.error('Native ONNX segmentation failed:', error);
       this.onStatus('AI ONNX Native 오류');
@@ -157,6 +164,9 @@ export class NativeOnnxSegmenter {
     this.processing = false;
     this.latestMask = null;
     this.runtimeInfo = null;
+    this.lastStatusAt = 0;
+    this.framesSinceStatus = 0;
+    this.lastInferenceMs = 0;
     this.onStatus('AI 대기');
   }
 }
