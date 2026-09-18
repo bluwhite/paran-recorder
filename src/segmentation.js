@@ -1,6 +1,11 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
 import { NativeOnnxSegmenter, isNativeOnnxAvailable, probeNativeOnnx } from './native-onnx-engine.js';
-import { NativeRvmSegmenter, isNativeRvmAvailable, probeNativeRvm } from './native-rvm-engine.js';
+import {
+  NativeRvmSegmenter,
+  bindRvmSettingsUi,
+  isNativeRvmAvailable,
+  probeNativeRvm,
+} from './native-rvm-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -490,6 +495,7 @@ export class PersonSegmenter {
     this.ppInfo = null;
     this.rvmInfo = null;
     bindSettingsUi();
+    bindRvmSettingsUi();
     this.#wireEngineUi();
   }
 
@@ -521,6 +527,7 @@ export class PersonSegmenter {
     const nativeOption = document.getElementById('nativeOnnxOption');
     const rvmOption = document.getElementById('nativeRvmOption');
     const advanced = document.getElementById('mediaPipeAdvanced');
+    const rvmAdvanced = document.getElementById('rvmAdvanced');
     const engineNote = document.getElementById('aiEngineNote');
     const nativeInfo = document.getElementById('nativeEngineInfo');
 
@@ -528,6 +535,7 @@ export class PersonSegmenter {
       const mode = this.#selectedMode();
       const nativeSelected = mode !== 'mediapipe';
       advanced?.classList.toggle('hidden', nativeSelected);
+      rvmAdvanced?.classList.toggle('hidden', mode !== 'native-rvm');
 
       if (engineNote) {
         const strong = engineNote.querySelector('strong');
