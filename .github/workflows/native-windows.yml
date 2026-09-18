@@ -26,8 +26,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: native-preview-${{ github.ref }}
-  cancel-in-progress: true
+  group: native-preview-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   build:
