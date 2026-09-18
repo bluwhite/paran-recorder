@@ -1,5 +1,5 @@
-const INPUT_WIDTH = 384;
-const INPUT_HEIGHT = 224;
+const INPUT_WIDTH = 256;
+const INPUT_HEIGHT = 144;
 const MIN_IDLE_MS = 2;
 
 function tauriInvoke() {
@@ -66,7 +66,7 @@ export class NativeOnnxSegmenter {
     const invoke = tauriInvoke();
     if (!invoke) throw new Error('ONNX Runtime Native는 데스크톱 EXE에서만 사용할 수 있습니다.');
 
-    this.onStatus('AI ONNX Runtime Native 준비 중');
+    this.onStatus('AI PP-HumanSegV2 Native 준비 중');
     const info = await invoke('native_runtime_info');
     if (!info?.available) {
       throw new Error(info?.message || '네이티브 ONNX Runtime을 사용할 수 없습니다.');
