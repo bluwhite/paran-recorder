@@ -190,8 +190,8 @@ async function setCaptureRegionEditable(editable) {
   await invoke('capture_region_set_editable', { editable });
   await refreshCaptureRegionInfo();
   setMessage(editable
-    ? '녹화 영역 박스의 위쪽 표시줄을 끌어 위치를 정하세요. 조정이 끝나면 위치 조정을 끄세요.'
-    : '녹화 영역 위치를 고정했습니다. 박스 안쪽의 프로그램을 다시 조작할 수 있습니다.');
+    ? '파란 박스 위에 나타난 작은 이동 손잡이를 끌어 위치를 정하세요.'
+    : '녹화 영역 위치를 고정했습니다. 이동 손잡이를 숨겼습니다.');
 }
 
 async function centerCaptureRegion() {
@@ -806,7 +806,18 @@ async function startPreview() {
   }
 
   await stopPreview();
-  if (isTauri) await ensureCaptureRegionVisible();
+
+  const restoreCaptureRegion = Boolean(isTauri && captureRegionInfo?.visible);
+  if (restoreCaptureRegion) {
+    const invoke = tauriInvoke();
+    if (invoke) {
+      captureRegionEdit.checked = false;
+      await invoke('capture_region_set_editable', { editable: false }).catch(() => {});
+      await invoke('capture_region_hide').catch(() => {});
+      captureRegionInfo = { ...captureRegionInfo, visible: false };
+      updateCaptureRegionUi();
+    }
+  }
 
   displayStream = await navigator.mediaDevices.getDisplayMedia({
     video: { frameRate: { ideal: 30, max: 60 } },
@@ -814,6 +825,10 @@ async function startPreview() {
   });
   screenVideo.srcObject = displayStream;
   await screenVideo.play();
+
+  if (isTauri) {
+    captureRegionInfo = await ensureCaptureRegionVisible();
+  }
 
   const displayTrack = displayStream.getVideoTracks()[0];
   const settings = displayTrack.getSettings();
@@ -1276,8 +1291,5 @@ saveModeInfo.textContent = 'Chrome/Edge에서는 가능한 경우 녹화 데이�
   loadPresenterSettings();
   updatePositionEditState();
   updateBackgroundControls();
-  if (isTauri) {
-    await guarded(ensureCaptureRegionVisible);
-  }
   await guarded(() => refreshDevices(true));
 })();
