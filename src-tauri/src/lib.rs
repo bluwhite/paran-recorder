@@ -26,8 +26,11 @@ const RVM_INPUT_WIDTH: usize = 256;
 const RVM_INPUT_HEIGHT: usize = 144;
 const RVM_DOWNSAMPLE_RATIO: f32 = 1.0;
 const CAPTURE_REGION_LABEL: &str = "capture-region";
+const CAPTURE_HANDLE_LABEL: &str = "capture-region-handle";
 const CAPTURE_WIDTH: u32 = 1280;
 const CAPTURE_HEIGHT: u32 = 720;
+const CAPTURE_HANDLE_WIDTH: u32 = 320;
+const CAPTURE_HANDLE_HEIGHT: u32 = 38;
 
 #[derive(Default)]
 struct NativeState {
@@ -111,6 +114,16 @@ fn capture_region_snapshot(app: &tauri::AppHandle) -> Result<CaptureRegionInfo, 
     let window = app
         .get_webview_window(CAPTURE_REGION_LABEL)
         .ok_or_else(|| "녹화 영역 창이 아직 만들어지지 않았습니다.".to_string())?;
+
+    if let Some(handle) = app.get_webview_window(CAPTURE_HANDLE_LABEL) {
+        let handle_visible = handle.is_visible().unwrap_or(false);
+        if handle_visible {
+            if let Ok(handle_position) = handle.outer_position() {
+                let _ = window.set_position(handle_position);
+            }
+        }
+    }
+
     let position = window
         .outer_position()
         .map_err(|error| format!("녹화 영역 위치를 읽지 못했습니다: {error}"))?;
@@ -154,36 +167,13 @@ fn centered_capture_position(monitor: &tauri::Monitor) -> PhysicalPosition<i32> 
     )
 }
 
-#[tauri::command]
-async fn capture_region_show(app: tauri::AppHandle) -> Result<CaptureRegionInfo, String> {
+fn ensure_capture_overlay(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(CAPTURE_REGION_LABEL) {
-        window
-            .show()
-            .map_err(|error| format!("녹화 영역 창을 표시하지 못했습니다: {error}"))?;
-        window
-            .set_always_on_top(true)
-            .map_err(|error| format!("녹화 영역 창을 최상위로 설정하지 못했습니다: {error}"))?;
-        window
-            .set_content_protected(true)
-            .map_err(|error| format!("녹화 영역 테두리 캡처 제외에 실패했습니다: {error}"))?;
-        window
-            .set_ignore_cursor_events(true)
-            .map_err(|error| format!("녹화 영역 마우스 통과 설정에 실패했습니다: {error}"))?;
-        return capture_region_snapshot(&app);
+        return Ok(window);
     }
 
-    let main = app
-        .get_webview_window("main")
-        .ok_or_else(|| "메인 창을 찾을 수 없습니다.".to_string())?;
-    let monitor = main
-        .current_monitor()
-        .map_err(|error| format!("현재 모니터를 확인하지 못했습니다: {error}"))?
-        .or_else(|| main.primary_monitor().ok().flatten())
-        .ok_or_else(|| "사용할 모니터를 찾을 수 없습니다.".to_string())?;
-    let position = centered_capture_position(&monitor);
-
     let window = WebviewWindowBuilder::new(
-        &app,
+        app,
         CAPTURE_REGION_LABEL,
         WebviewUrl::App("capture-box.html".into()),
     )
@@ -203,14 +193,86 @@ async fn capture_region_show(app: tauri::AppHandle) -> Result<CaptureRegionInfo,
         .set_size(PhysicalSize::new(CAPTURE_WIDTH, CAPTURE_HEIGHT))
         .map_err(|error| format!("녹화 영역 크기를 설정하지 못했습니다: {error}"))?;
     window
-        .set_position(position)
-        .map_err(|error| format!("녹화 영역 위치를 설정하지 못했습니다: {error}"))?;
-    window
         .set_content_protected(true)
         .map_err(|error| format!("녹화 영역 테두리 캡처 제외에 실패했습니다: {error}"))?;
     window
         .set_ignore_cursor_events(true)
         .map_err(|error| format!("녹화 영역 마우스 통과 설정에 실패했습니다: {error}"))?;
+
+    Ok(window)
+}
+
+fn ensure_capture_handle(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(CAPTURE_HANDLE_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        CAPTURE_HANDLE_LABEL,
+        WebviewUrl::App("capture-handle.html".into()),
+    )
+    .title("Paran Recorder · 영역 이동")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .content_protected(true)
+    .build()
+    .map_err(|error| format!("녹화 영역 이동 손잡이를 만들지 못했습니다: {error}"))?;
+
+    window
+        .set_size(PhysicalSize::new(CAPTURE_HANDLE_WIDTH, CAPTURE_HANDLE_HEIGHT))
+        .map_err(|error| format!("녹화 영역 이동 손잡이 크기를 설정하지 못했습니다: {error}"))?;
+    window
+        .set_content_protected(true)
+        .map_err(|error| format!("이동 손잡이 캡처 제외에 실패했습니다: {error}"))?;
+    window
+        .hide()
+        .map_err(|error| format!("이동 손잡이를 숨기지 못했습니다: {error}"))?;
+
+    Ok(window)
+}
+
+#[tauri::command]
+async fn capture_region_show(app: tauri::AppHandle) -> Result<CaptureRegionInfo, String> {
+    let window = ensure_capture_overlay(&app)?;
+
+    let position = match window.outer_position() {
+        Ok(position) if position.x != 0 || position.y != 0 => position,
+        _ => {
+            let main = app
+                .get_webview_window("main")
+                .ok_or_else(|| "메인 창을 찾을 수 없습니다.".to_string())?;
+            let monitor = main
+                .current_monitor()
+                .map_err(|error| format!("현재 모니터를 확인하지 못했습니다: {error}"))?
+                .or_else(|| main.primary_monitor().ok().flatten())
+                .ok_or_else(|| "사용할 모니터를 찾을 수 없습니다.".to_string())?;
+            centered_capture_position(&monitor)
+        }
+    };
+
+    window
+        .set_position(position)
+        .map_err(|error| format!("녹화 영역 위치를 설정하지 못했습니다: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("녹화 영역 창을 표시하지 못했습니다: {error}"))?;
+    window
+        .set_always_on_top(true)
+        .map_err(|error| format!("녹화 영역 창을 최상위로 설정하지 못했습니다: {error}"))?;
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("녹화 영역 마우스 통과 설정에 실패했습니다: {error}"))?;
+
+    if let Ok(handle) = ensure_capture_handle(&app) {
+        let _ = handle.set_position(position);
+        let _ = handle.hide();
+    }
 
     capture_region_snapshot(&app)
 }
@@ -222,45 +284,67 @@ fn capture_region_info(app: tauri::AppHandle) -> Result<CaptureRegionInfo, Strin
 
 #[tauri::command]
 fn capture_region_set_editable(app: tauri::AppHandle, editable: bool) -> Result<(), String> {
-    let window = app
-        .get_webview_window(CAPTURE_REGION_LABEL)
-        .ok_or_else(|| "녹화 영역 창이 아직 만들어지지 않았습니다.".to_string())?;
-    window
-        .set_ignore_cursor_events(!editable)
-        .map_err(|error| format!("녹화 영역 조정 모드를 변경하지 못했습니다: {error}"))?;
-    let script = if editable {
-        "document.body.classList.add('editable')"
+    let overlay = ensure_capture_overlay(&app)?;
+    overlay
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("녹화 영역 마우스 통과 설정에 실패했습니다: {error}"))?;
+
+    let handle = ensure_capture_handle(&app)?;
+    if editable {
+        let position = overlay
+            .outer_position()
+            .map_err(|error| format!("녹화 영역 위치를 읽지 못했습니다: {error}"))?;
+        handle
+            .set_position(position)
+            .map_err(|error| format!("이동 손잡이 위치를 설정하지 못했습니다: {error}"))?;
+        handle
+            .show()
+            .map_err(|error| format!("이동 손잡이를 표시하지 못했습니다: {error}"))?;
+        handle
+            .set_always_on_top(true)
+            .map_err(|error| format!("이동 손잡이를 최상위로 설정하지 못했습니다: {error}"))?;
     } else {
-        "document.body.classList.remove('editable')"
-    };
-    let _ = window.eval(script);
+        if let Ok(position) = handle.outer_position() {
+            let _ = overlay.set_position(position);
+        }
+        handle
+            .hide()
+            .map_err(|error| format!("이동 손잡이를 숨기지 못했습니다: {error}"))?;
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn capture_region_center(app: tauri::AppHandle) -> Result<CaptureRegionInfo, String> {
-    let window = app
-        .get_webview_window(CAPTURE_REGION_LABEL)
-        .ok_or_else(|| "녹화 영역 창이 아직 만들어지지 않았습니다.".to_string())?;
-    let monitor = window
+    let overlay = ensure_capture_overlay(&app)?;
+    let monitor = overlay
         .current_monitor()
         .map_err(|error| format!("현재 모니터를 확인하지 못했습니다: {error}"))?
-        .or_else(|| window.primary_monitor().ok().flatten())
+        .or_else(|| overlay.primary_monitor().ok().flatten())
         .ok_or_else(|| "사용할 모니터를 찾을 수 없습니다.".to_string())?;
-    window
-        .set_position(centered_capture_position(&monitor))
+    let position = centered_capture_position(&monitor);
+    overlay
+        .set_position(position)
         .map_err(|error| format!("녹화 영역을 가운데로 이동하지 못했습니다: {error}"))?;
+
+    if let Ok(handle) = ensure_capture_handle(&app) {
+        let _ = handle.set_position(position);
+    }
+
     capture_region_snapshot(&app)
 }
 
 #[tauri::command]
 fn capture_region_hide(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window(CAPTURE_REGION_LABEL)
-        .ok_or_else(|| "녹화 영역 창이 아직 만들어지지 않았습니다.".to_string())?;
-    window
-        .hide()
-        .map_err(|error| format!("녹화 영역 창을 숨기지 못했습니다: {error}"))
+    if let Some(handle) = app.get_webview_window(CAPTURE_HANDLE_LABEL) {
+        let _ = handle.hide();
+    }
+    if let Some(window) = app.get_webview_window(CAPTURE_REGION_LABEL) {
+        window
+            .hide()
+            .map_err(|error| format!("녹화 영역 창을 숨기지 못했습니다: {error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
