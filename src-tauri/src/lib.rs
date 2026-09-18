@@ -62,6 +62,7 @@ struct RvmEngine {
     session: Session,
     provider: String,
     rec: Vec<RecurrentState>,
+    config: Option<(usize, usize, u32)>,
 }
 
 #[derive(Serialize)]
@@ -161,6 +162,7 @@ fn create_rvm_engine(app: &tauri::AppHandle) -> Result<RvmEngine, String> {
             RecurrentState::initial(),
             RecurrentState::initial(),
         ],
+        config: None,
     })
 }
 
@@ -437,6 +439,17 @@ fn request_dimension(request: &tauri::ipc::Request, name: &'static str) -> Resul
         .map_err(|_| format!("헤더 숫자 형식이 잘못되었습니다: {name}"))
 }
 
+fn request_float(request: &tauri::ipc::Request, name: &'static str) -> Result<f32, String> {
+    request
+        .headers()
+        .get(name)
+        .ok_or_else(|| format!("필수 헤더가 없습니다: {name}"))?
+        .to_str()
+        .map_err(|_| format!("헤더 형식이 잘못되었습니다: {name}"))?
+        .parse::<f32>()
+        .map_err(|_| format!("헤더 숫자 형식이 잘못되었습니다: {name}"))
+}
+
 fn erode_cross(source: &[u8], width: usize, height: usize, radius: isize) -> Vec<u8> {
     let radius = radius.max(0) as usize;
     let span = (radius * 2) + 1;
@@ -674,10 +687,19 @@ fn native_rvm_segment(
         let width = request_dimension(&request, "x-width")?;
         let height = request_dimension(&request, "x-height")?;
 
-        if width != RVM_INPUT_WIDTH || height != RVM_INPUT_HEIGHT {
+        let supported_resolution = matches!(
+            (width, height),
+            (256, 144) | (224, 126) | (192, 108)
+        );
+        if !supported_resolution {
+            return Err(format!("지원하지 않는 RVM 입력 해상도입니다: {}x{}", width, height));
+        }
+
+        let downsample_ratio = request_float(&request, "x-downsample-ratio")?;
+        if !(0.50..=1.00).contains(&downsample_ratio) {
             return Err(format!(
-                "RVM 입력은 {}x{}여야 합니다: {}x{}",
-                RVM_INPUT_WIDTH, RVM_INPUT_HEIGHT, width, height
+                "RVM downsample ratio는 0.50~1.00이어야 합니다: {}",
+                downsample_ratio
             ));
         }
 
@@ -710,7 +732,7 @@ fn native_rvm_segment(
 
         let ratio = Tensor::from_array((
             [1usize],
-            vec![RVM_DOWNSAMPLE_RATIO].into_boxed_slice(),
+            vec![downsample_ratio].into_boxed_slice(),
         ))
         .map_err(|error| format!("RVM downsample ratio tensor 생성 실패: {error}"))?;
 
@@ -718,6 +740,17 @@ fn native_rvm_segment(
         let engine = guard
             .as_mut()
             .ok_or_else(|| "RVM Runtime 세션이 준비되지 않았습니다.".to_string())?;
+
+        let config = (width, height, downsample_ratio.to_bits());
+        if engine.config != Some(config) {
+            engine.rec = vec![
+                RecurrentState::initial(),
+                RecurrentState::initial(),
+                RecurrentState::initial(),
+                RecurrentState::initial(),
+            ];
+            engine.config = Some(config);
+        }
 
         let r1 = recurrent_tensor(&engine.rec[0])?;
         let r2 = recurrent_tensor(&engine.rec[1])?;
@@ -788,6 +821,7 @@ fn native_rvm_reset(state: tauri::State<'_, NativeState>) -> Result<(), String> 
                 RecurrentState::initial(),
                 RecurrentState::initial(),
             ];
+            engine.config = None;
         }
         Ok(())
     }
