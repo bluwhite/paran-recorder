@@ -84,6 +84,8 @@ let presenterPosition = { x: 0.86, y: 0.84 };
 let presenterDrag = null;
 
 const PRESENTER_SETTINGS_KEY = 'paran-recorder-presenter-v1';
+const PRESENTER_POSITION_MIN = -0.5;
+const PRESENTER_POSITION_MAX = 1.5;
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
 const segmenter = new PersonSegmenter((text) => {
   aiStatus.textContent = text;
@@ -191,17 +193,12 @@ function cameraRect() {
       ? cameraVideo.videoHeight / cameraVideo.videoWidth
       : 9 / 16);
   const height = width * ratio;
-  const margin = 28;
   const centerX = presenterPosition.x * canvas.width;
   const centerY = presenterPosition.y * canvas.height;
-  const minX = Math.min(margin, Math.max(0, canvas.width - width));
-  const minY = Math.min(margin, Math.max(0, canvas.height - height));
-  const maxX = Math.max(minX, canvas.width - width - margin);
-  const maxY = Math.max(minY, canvas.height - height - margin);
 
   return {
-    x: clamp(centerX - width / 2, minX, maxX),
-    y: clamp(centerY - height / 2, minY, maxY),
+    x: centerX - width / 2,
+    y: centerY - height / 2,
     width,
     height,
   };
@@ -234,8 +231,8 @@ function loadPresenterSettings() {
     const saved = JSON.parse(localStorage.getItem(PRESENTER_SETTINGS_KEY) || 'null');
     if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
       presenterPosition = {
-        x: clamp(Number(saved.x), 0, 1),
-        y: clamp(Number(saved.y), 0, 1),
+        x: clamp(Number(saved.x), PRESENTER_POSITION_MIN, PRESENTER_POSITION_MAX),
+        y: clamp(Number(saved.y), PRESENTER_POSITION_MIN, PRESENTER_POSITION_MAX),
       };
     }
     if (saved && Number.isFinite(saved.size)) {
@@ -250,8 +247,8 @@ function loadPresenterSettings() {
 
 function setPresenterPosition(x, y, save = true) {
   presenterPosition = {
-    x: clamp(Number(x), 0, 1),
-    y: clamp(Number(y), 0, 1),
+    x: clamp(Number(x), PRESENTER_POSITION_MIN, PRESENTER_POSITION_MAX),
+    y: clamp(Number(y), PRESENTER_POSITION_MIN, PRESENTER_POSITION_MAX),
   };
   cameraPosition.value = 'custom';
   syncPresenterControls();
