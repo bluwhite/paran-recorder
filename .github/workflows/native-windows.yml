@@ -17,7 +17,54 @@ permissions:
   contents: read
 
 jobs:
+  convert-model:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download Paddle PP-HumanSegV2-Lite
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p native-model-source
+          base="https://huggingface.co/unography/PP-HumanSegV2-Lite/resolve/9892dd73de78985969ba3f3a0c9e58b0b776cc07/portrait_pp_humansegv2_lite_256x144_inference_model_with_softmax"
+          curl -L --fail "$base/model.pdmodel?download=true" -o native-model-source/model.pdmodel
+          curl -L --fail "$base/model.pdiparams?download=true" -o native-model-source/model.pdiparams
+          ls -lh native-model-source
+
+      - name: Convert Paddle model to ONNX
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install packaging paddlepaddle paddle2onnx
+          mkdir -p converted-model
+          paddle2onnx \
+            --model_dir native-model-source \
+            --model_filename model.pdmodel \
+            --params_filename model.pdiparams \
+            --save_file converted-model/pp_humanseg_v2_lite.onnx \
+            --opset_version 11 \
+            --enable_onnx_checker True
+          test $(stat -c%s converted-model/pp_humanseg_v2_lite.onnx) -gt 1000000
+          ls -lh converted-model/pp_humanseg_v2_lite.onnx
+
+      - name: Upload converted ONNX model
+        uses: actions/upload-artifact@v4
+        with:
+          name: PP-HumanSegV2-Lite-ONNX
+          path: converted-model/pp_humanseg_v2_lite.onnx
+          if-no-files-found: error
+
   build:
+    needs: convert-model
     runs-on: windows-latest
 
     steps:
@@ -35,35 +82,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Download converted PP-HumanSegV2 ONNX
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.11"
-
-      - name: Convert PP-HumanSegV2-Lite to ONNX
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "native-model-source" | Out-Null
-          New-Item -ItemType Directory -Force -Path "src-tauri/resources/models" | Out-Null
-
-          $base = "https://huggingface.co/unography/PP-HumanSegV2-Lite/resolve/9892dd73de78985969ba3f3a0c9e58b0b776cc07/portrait_pp_humansegv2_lite_256x144_inference_model_with_softmax"
-          Invoke-WebRequest -Uri "$base/model.pdmodel?download=true" -OutFile "native-model-source/model.pdmodel"
-          Invoke-WebRequest -Uri "$base/model.pdiparams?download=true" -OutFile "native-model-source/model.pdiparams"
-
-          python -m pip install --upgrade pip
-          python -m pip install packaging paddlepaddle paddle2onnx
-
-          paddle2onnx `
-            --model_dir native-model-source `
-            --model_filename model.pdmodel `
-            --params_filename model.pdiparams `
-            --save_file src-tauri/resources/models/pp_humanseg_v2_lite.onnx `
-            --opset_version 11 `
-            --enable_onnx_checker True
-
-          $size = (Get-Item "src-tauri/resources/models/pp_humanseg_v2_lite.onnx").Length
-          Write-Host "PP-HumanSegV2-Lite ONNX bytes: $size"
-          if ($size -lt 1000000) { throw "Converted PP-HumanSeg ONNX model looks incomplete." }
+          name: PP-HumanSegV2-Lite-ONNX
+          path: src-tauri/resources/models
 
       - name: Verify native model
         run: npm run native:model
@@ -102,25 +125,18 @@ jobs:
           }
 
           @"
-          Paran Recorder Native Test
+          Paran Recorder Native Test - PP-HumanSegV2-Lite
 
           1. Keep all files in this folder together.
           2. Run ParanRecorder.exe.
           3. In AI background engine, choose ONNX Runtime Native · PP-HumanSegV2.
-          4. If ONNX Native is unavailable, note the status text shown in the app.
+          4. Compare it with MediaPipe using the same camera and lighting.
 
           This test build requires Microsoft Edge WebView2 Runtime.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
 
           Compress-Archive -Path "$stage/*" -DestinationPath "native-test/Paran-Recorder-Native-Test.zip" -Force
           Get-ChildItem "native-test" -Recurse
-
-      - name: Upload converted ONNX model
-        uses: actions/upload-artifact@v4
-        with:
-          name: PP-HumanSegV2-Lite-ONNX
-          path: src-tauri/resources/models/pp_humanseg_v2_lite.onnx
-          if-no-files-found: error
 
       - name: Upload install-free native test
         uses: actions/upload-artifact@v4
