@@ -9,6 +9,7 @@ on:
       - "src/native-onnx-engine.js"
       - "src/segmentation.js"
       - "src/index.html"
+      - "scripts/prepare-native-model.mjs"
       - "package.json"
       - ".github/workflows/native-windows.yml"
 
@@ -34,35 +35,66 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download MODNet ONNX model
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "src-tauri/resources/models" | Out-Null
-          Invoke-WebRequest -Uri "https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx?download=true" -OutFile "src-tauri/resources/models/modnet.onnx"
-          $size = (Get-Item "src-tauri/resources/models/modnet.onnx").Length
-          Write-Host "MODNet model bytes: $size"
-          if ($size -lt 10000000) { throw "MODNet download looks incomplete." }
+      - name: Prepare MODNet ONNX model
+        run: npm run native:model
 
       - name: Warm native build and collect ONNX Runtime DLLs
         shell: pwsh
         run: |
           cargo build --manifest-path src-tauri/Cargo.toml --release
+
           $dlls = Get-ChildItem -Path "src-tauri/target/release" -Recurse -Filter "*.dll" |
             Where-Object { $_.Name -match "onnx|DirectML|dml" } |
             Sort-Object Name -Unique
+
           foreach ($dll in $dlls) {
             Write-Host "Bundling native DLL: $($dll.FullName)"
             Copy-Item $dll.FullName "src-tauri/resources/$($dll.Name)" -Force
           }
+
           Write-Host "Native resource directory:"
           Get-ChildItem "src-tauri/resources" -Recurse
 
       - name: Build NSIS native host
         run: npm run tauri:build -- --bundles nsis
 
-      - name: Upload Windows setup EXE
+      - name: Create install-free native test ZIP
+        shell: pwsh
+        run: |
+          $stage = "native-test/ParanRecorder"
+          New-Item -ItemType Directory -Force -Path "$stage/models" | Out-Null
+
+          Copy-Item "src-tauri/target/release/paran-recorder.exe" "$stage/ParanRecorder.exe" -Force
+          Copy-Item "src-tauri/resources/models/modnet.onnx" "$stage/models/modnet.onnx" -Force
+
+          Get-ChildItem "src-tauri/resources" -Filter "*.dll" -File | ForEach-Object {
+            Copy-Item $_.FullName "$stage/$($_.Name)" -Force
+          }
+
+          @"
+          Paran Recorder Native Test
+
+          1. Keep all files in this folder together.
+          2. Run ParanRecorder.exe.
+          3. In AI background engine, choose ONNX Runtime Native.
+          4. If ONNX Native is unavailable, note the status text shown in the app.
+
+          This test build requires Microsoft Edge WebView2 Runtime.
+          "@ | Set-Content "$stage/README.txt" -Encoding UTF8
+
+          Compress-Archive -Path "$stage/*" -DestinationPath "native-test/Paran-Recorder-Native-Test.zip" -Force
+          Get-ChildItem "native-test" -Recurse
+
+      - name: Upload install-free native test
         uses: actions/upload-artifact@v4
         with:
-          name: Paran-Recorder-Native-Windows
+          name: Paran-Recorder-Native-Test
+          path: native-test/Paran-Recorder-Native-Test.zip
+          if-no-files-found: error
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paran-Recorder-Native-Installer
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
