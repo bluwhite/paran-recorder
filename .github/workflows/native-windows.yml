@@ -35,7 +35,37 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Prepare MODNet ONNX model
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Convert PP-HumanSegV2-Lite to ONNX
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "native-model-source" | Out-Null
+          New-Item -ItemType Directory -Force -Path "src-tauri/resources/models" | Out-Null
+
+          $base = "https://huggingface.co/unography/PP-HumanSegV2-Lite/resolve/9892dd73de78985969ba3f3a0c9e58b0b776cc07/portrait_pp_humansegv2_lite_256x144_inference_model_with_softmax"
+          Invoke-WebRequest -Uri "$base/model.pdmodel?download=true" -OutFile "native-model-source/model.pdmodel"
+          Invoke-WebRequest -Uri "$base/model.pdiparams?download=true" -OutFile "native-model-source/model.pdiparams"
+
+          python -m pip install --upgrade pip
+          python -m pip install paddle2onnx
+
+          paddle2onnx `
+            --model_dir native-model-source `
+            --model_filename model.pdmodel `
+            --params_filename model.pdiparams `
+            --save_file src-tauri/resources/models/pp_humanseg_v2_lite.onnx `
+            --opset_version 11 `
+            --enable_onnx_checker True
+
+          $size = (Get-Item "src-tauri/resources/models/pp_humanseg_v2_lite.onnx").Length
+          Write-Host "PP-HumanSegV2-Lite ONNX bytes: $size"
+          if ($size -lt 1000000) { throw "Converted PP-HumanSeg ONNX model looks incomplete." }
+
+      - name: Verify native model
         run: npm run native:model
 
       - name: Warm native build and collect ONNX Runtime DLLs
@@ -65,7 +95,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$stage/models" | Out-Null
 
           Copy-Item "src-tauri/target/release/paran-recorder.exe" "$stage/ParanRecorder.exe" -Force
-          Copy-Item "src-tauri/resources/models/modnet.onnx" "$stage/models/modnet.onnx" -Force
+          Copy-Item "src-tauri/resources/models/pp_humanseg_v2_lite.onnx" "$stage/models/pp_humanseg_v2_lite.onnx" -Force
 
           Get-ChildItem "src-tauri/resources" -Filter "*.dll" -File | ForEach-Object {
             Copy-Item $_.FullName "$stage/$($_.Name)" -Force
@@ -76,7 +106,7 @@ jobs:
 
           1. Keep all files in this folder together.
           2. Run ParanRecorder.exe.
-          3. In AI background engine, choose ONNX Runtime Native.
+          3. In AI background engine, choose ONNX Runtime Native · PP-HumanSegV2.
           4. If ONNX Native is unavailable, note the status text shown in the app.
 
           This test build requires Microsoft Edge WebView2 Runtime.
@@ -84,6 +114,13 @@ jobs:
 
           Compress-Archive -Path "$stage/*" -DestinationPath "native-test/Paran-Recorder-Native-Test.zip" -Force
           Get-ChildItem "native-test" -Recurse
+
+      - name: Upload converted ONNX model
+        uses: actions/upload-artifact@v4
+        with:
+          name: PP-HumanSegV2-Lite-ONNX
+          path: src-tauri/resources/models/pp_humanseg_v2_lite.onnx
+          if-no-files-found: error
 
       - name: Upload install-free native test
         uses: actions/upload-artifact@v4
