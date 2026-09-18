@@ -1,0 +1,68 @@
+name: Build Windows Native Preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "src/native-onnx-engine.js"
+      - "src/segmentation.js"
+      - "src/index.html"
+      - "package.json"
+      - ".github/workflows/native-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download MODNet ONNX model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "src-tauri/resources/models" | Out-Null
+          Invoke-WebRequest -Uri "https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx?download=true" -OutFile "src-tauri/resources/models/modnet.onnx"
+          $size = (Get-Item "src-tauri/resources/models/modnet.onnx").Length
+          Write-Host "MODNet model bytes: $size"
+          if ($size -lt 10000000) { throw "MODNet download looks incomplete." }
+
+      - name: Warm native build and collect ONNX Runtime DLLs
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --release
+          $dlls = Get-ChildItem -Path "src-tauri/target/release" -Recurse -Filter "*.dll" |
+            Where-Object { $_.Name -match "onnx|DirectML|dml" } |
+            Sort-Object Name -Unique
+          foreach ($dll in $dlls) {
+            Write-Host "Bundling native DLL: $($dll.FullName)"
+            Copy-Item $dll.FullName "src-tauri/resources/$($dll.Name)" -Force
+          }
+          Write-Host "Native resource directory:"
+          Get-ChildItem "src-tauri/resources" -Recurse
+
+      - name: Build NSIS native host
+        run: npm run tauri:build -- --bundles nsis
+
+      - name: Upload Windows setup EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paran-Recorder-Native-Windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
