@@ -1,0 +1,8 @@
+Robust Video Matting (RVM) model notice
+
+Upstream project: https://github.com/PeterL1n/RobustVideoMatting
+Model: rvm_mobilenetv3_fp32.onnx, release v1.0.0
+Upstream license: GNU General Public License v3.0
+
+Paran Recorder downloads the official upstream model during web deployment.
+The model is used locally in the user's browser for WebGPU inference.
