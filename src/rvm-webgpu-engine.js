@@ -1,7 +1,9 @@
 import * as ort from 'onnxruntime-web/webgpu';
 
-const MODEL_URL =
-  'https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx';
+const MODEL_URL = new URL(
+  './models/rvm_mobilenetv3_fp32.onnx',
+  window.location.href,
+).toString();
 const WIDTH = 640;
 const HEIGHT = 480;
 const RATIO = 0.60;
