@@ -14,7 +14,7 @@ function Fail([string]$Text) { Write-Host "[FAIL] $Text" -ForegroundColor Red }
 
 Write-Host ""
 Write-Host "==============================================="
-Write-Host " Paran Recorder 개발환경 확인"
+Write-Host " Paran Recorder development environment check"
 Write-Host "==============================================="
 Write-Host ""
 
@@ -23,39 +23,38 @@ $failed = $false
 if (Has-Command 'git') {
     Ok ("Git " + ((git --version) -replace '^git version\s*',''))
 } else {
-    Fail "Git이 설치되어 있지 않습니다."
-    Write-Host "  설치: https://git-scm.com/download/win"
+    Fail "Git is not installed."
+    Write-Host "  Install: https://git-scm.com/download/win"
     $failed = $true
 }
 
 if (Has-Command 'node') {
-    $nodeVersion = node --version
-    Ok "Node.js $nodeVersion"
+    Ok ("Node.js " + (node --version))
 } else {
-    Fail "Node.js가 설치되어 있지 않습니다."
-    Write-Host "  설치: https://nodejs.org/"
+    Fail "Node.js is not installed."
+    Write-Host "  Install: https://nodejs.org/"
     $failed = $true
 }
 
 if (Has-Command 'npm') {
     Ok ("npm " + (npm --version))
 } else {
-    Fail "npm을 찾을 수 없습니다."
+    Fail "npm was not found."
     $failed = $true
 }
 
 if (Has-Command 'rustc') {
     Ok (rustc --version)
 } else {
-    Fail "Rust가 설치되어 있지 않습니다."
-    Write-Host "  설치: https://rustup.rs/"
+    Fail "Rust is not installed."
+    Write-Host "  Install: https://rustup.rs/"
     $failed = $true
 }
 
 if (Has-Command 'cargo') {
     Ok (cargo --version)
 } else {
-    Fail "Cargo를 찾을 수 없습니다."
+    Fail "Cargo was not found."
     $failed = $true
 }
 
@@ -66,45 +65,44 @@ if (Test-Path $vswhere) {
     if ($vsPath) {
         Ok "Visual Studio C++ Build Tools"
     } else {
-        Warn "Visual Studio는 있지만 C++ Build Tools가 확인되지 않았습니다."
-        Write-Host "  Visual Studio Installer에서 'Desktop development with C++'를 추가하세요."
+        Warn "Visual Studio was found, but C++ Build Tools were not detected."
+        Write-Host "  Add the 'Desktop development with C++' workload."
         $failed = $true
     }
 } else {
-    Warn "Visual Studio C++ Build Tools 설치 여부를 확인하지 못했습니다."
-    Write-Host "  Tauri Rust 컴파일 오류가 나면 Visual Studio Build Tools의"
-    Write-Host "  'Desktop development with C++' 워크로드를 설치하세요."
+    Warn "Visual Studio C++ Build Tools could not be detected."
+    Write-Host "  If Tauri compilation fails, install 'Desktop development with C++'."
 }
 
 if ($failed) {
     Write-Host ""
-    Fail "필수 개발환경이 부족합니다. 위 항목을 설치한 뒤 이 파일을 다시 실행하세요."
+    Fail "Required development tools are missing."
     exit 1
 }
 
 Write-Host ""
-Write-Host "[1/3] npm 패키지 확인..."
+Write-Host "[1/3] Checking npm packages..."
 & npm install --no-audit --no-fund --no-package-lock
-if ($LASTEXITCODE -ne 0) { throw "npm install 실패" }
-Ok "npm 패키지 준비 완료"
+if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+Ok "npm packages ready"
 
 Write-Host ""
-Write-Host "[2/3] Tauri CLI 확인..."
+Write-Host "[2/3] Checking Tauri CLI..."
 & npm run tauri -- --version
-if ($LASTEXITCODE -ne 0) { throw "Tauri CLI 확인 실패" }
-Ok "Tauri CLI 준비 완료"
+if ($LASTEXITCODE -ne 0) { throw "Tauri CLI check failed" }
+Ok "Tauri CLI ready"
 
 Write-Host ""
-Write-Host "[3/3] Rust 의존성 미리 받기..."
+Write-Host "[3/3] Fetching Rust dependencies..."
 & cargo fetch --manifest-path src-tauri/Cargo.toml
-if ($LASTEXITCODE -ne 0) { throw "cargo fetch 실패" }
-Ok "Rust 의존성 준비 완료"
+if ($LASTEXITCODE -ne 0) { throw "cargo fetch failed" }
+Ok "Rust dependencies ready"
 
 Set-Content -Path (Join-Path $Root '.dev-setup-ok') -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Encoding ASCII
 
 Write-Host ""
 Write-Host "==============================================="
-Write-Host " 개발환경 준비 완료"
-Write-Host " 이제 RUN_LATEST.bat만 더블클릭하면 됩니다."
+Write-Host " Development environment is ready."
+Write-Host " You can now use START_DEV.bat."
 Write-Host "==============================================="
 Write-Host ""
