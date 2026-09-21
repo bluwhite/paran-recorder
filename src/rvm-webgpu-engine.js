@@ -66,9 +66,26 @@ function drawCameraToCanvas(context, video) {
   context.drawImage(video, sx, sy, sw, sh, 0, 0, WIDTH, HEIGHT);
 }
 
-function rgbaFromOutputs(fgr, pha) {
-  const fgrData = fgr.data;
-  const phaData = pha.data;
+function inputTensorFromImageData(imageData) {
+  const pixels = imageData.data;
+  const plane = WIDTH * HEIGHT;
+  const input = new Float32Array(plane * 3);
+
+  for (let i = 0; i < plane; i += 1) {
+    const p = i * 4;
+    input[i] = pixels[p] / 255.0;
+    input[plane + i] = pixels[p + 1] / 255.0;
+    input[(plane * 2) + i] = pixels[p + 2] / 255.0;
+  }
+
+  return new ort.Tensor('float32', input, [1, 3, HEIGHT, WIDTH]);
+}
+
+async function rgbaFromOutputs(fgr, pha) {
+  const [fgrData, phaData] = await Promise.all([
+    fgr.getData(),
+    pha.getData(),
+  ]);
   const plane = WIDTH * HEIGHT;
 
   if (!fgrData || fgrData.length !== plane * 3) {
@@ -79,13 +96,23 @@ function rgbaFromOutputs(fgr, pha) {
   }
 
   const rgba = new Uint8Array(plane * 4);
+  let alphaSum = 0;
+  let alphaMax = 0;
   for (let i = 0, p = 0; i < plane; i += 1, p += 4) {
-    rgba[p] = Math.round(Math.max(0, Math.min(1, fgrData[i])) * 255);
-    rgba[p + 1] = Math.round(Math.max(0, Math.min(1, fgrData[plane + i])) * 255);
-    rgba[p + 2] = Math.round(Math.max(0, Math.min(1, fgrData[(plane * 2) + i])) * 255);
-    rgba[p + 3] = Math.round(Math.max(0, Math.min(1, phaData[i])) * 255);
+    const alpha = Math.max(0, Math.min(1, Number(phaData[i])));
+    rgba[p] = Math.round(Math.max(0, Math.min(1, Number(fgrData[i]))) * 255);
+    rgba[p + 1] = Math.round(Math.max(0, Math.min(1, Number(fgrData[plane + i]))) * 255);
+    rgba[p + 2] = Math.round(Math.max(0, Math.min(1, Number(fgrData[(plane * 2) + i]))) * 255);
+    rgba[p + 3] = Math.round(alpha * 255);
+    alphaSum += alpha;
+    if (alpha > alphaMax) alphaMax = alpha;
   }
-  return rgba;
+
+  return {
+    rgba,
+    alphaMean: alphaSum / plane,
+    alphaMax,
+  };
 }
 
 export class RvmWebGpuSegmenter {
@@ -192,11 +219,7 @@ export class RvmWebGpuSegmenter {
     try {
       drawCameraToCanvas(this.context, cameraVideo);
       const imageData = this.context.getImageData(0, 0, WIDTH, HEIGHT);
-      src = await ort.Tensor.fromImage(imageData, {
-        tensorFormat: 'RGB',
-        tensorLayout: 'NCHW',
-        dataType: 'float32',
-      });
+      src = inputTensorFromImageData(imageData);
 
       outputs = await this.session.run({
         src,
@@ -213,7 +236,7 @@ export class RvmWebGpuSegmenter {
         throw new Error('RVM WebGPU 출력(fgr/pha/recurrent state)을 찾지 못했습니다.');
       }
 
-      const rgba = rgbaFromOutputs(fgr, pha);
+      const { rgba, alphaMean, alphaMax } = await rgbaFromOutputs(fgr, pha);
       const previousRec = this.rec;
       this.rec = [outputs.r1o, outputs.r2o, outputs.r3o, outputs.r4o];
 
@@ -236,7 +259,9 @@ export class RvmWebGpuSegmenter {
       if (now - this.lastStatusAt >= 1000) {
         const elapsed = this.lastStatusAt > 0 ? (now - this.lastStatusAt) / 1000 : 1;
         const fps = Math.max(1, Math.round(this.framesSinceStatus / elapsed));
-        this.onStatus(`AI 준비 · RVM WebGPU · ${Math.round(this.lastInferenceMs)}ms / ${fps}fps`);
+        this.onStatus(
+          `AI 준비 · RVM WebGPU · ${Math.round(this.lastInferenceMs)}ms / ${fps}fps · α평균 ${alphaMean.toFixed(2)} · 최대 ${alphaMax.toFixed(2)}`,
+        );
         this.lastStatusAt = now;
         this.framesSinceStatus = 0;
       }
