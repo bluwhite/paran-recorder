@@ -6,6 +6,7 @@ import {
   isNativeRvmAvailable,
   probeNativeRvm,
 } from './native-rvm-engine.js';
+import { NativeRvmHqSegmenter } from './native-rvm-hq-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -501,6 +502,7 @@ export class PersonSegmenter {
 
   #selectedMode() {
     const value = document.getElementById('aiEngineSelect')?.value;
+    if (value === 'native-rvm-hq' && isNativeRvmAvailable()) return 'native-rvm-hq';
     if (value === 'native-rvm' && isNativeRvmAvailable()) return 'native-rvm';
     if (value === 'native-onnx' && isNativeOnnxAvailable()) return 'native-onnx';
     return 'mediapipe';
@@ -512,7 +514,9 @@ export class PersonSegmenter {
 
     this.engine?.close?.();
     this.engineMode = selectedMode;
-    if (selectedMode === 'native-rvm') {
+    if (selectedMode === 'native-rvm-hq') {
+      this.engine = new NativeRvmHqSegmenter(this.onStatus);
+    } else if (selectedMode === 'native-rvm') {
       this.engine = new NativeRvmSegmenter(this.onStatus);
     } else if (selectedMode === 'native-onnx') {
       this.engine = new NativeOnnxSegmenter(this.onStatus);
@@ -526,6 +530,7 @@ export class PersonSegmenter {
     const select = document.getElementById('aiEngineSelect');
     const nativeOption = document.getElementById('nativeOnnxOption');
     const rvmOption = document.getElementById('nativeRvmOption');
+    const rvmHqOption = document.getElementById('nativeRvmHqOption');
     const advanced = document.getElementById('mediaPipeAdvanced');
     const rvmAdvanced = document.getElementById('rvmAdvanced');
     const engineNote = document.getElementById('aiEngineNote');
@@ -541,7 +546,10 @@ export class PersonSegmenter {
         const strong = engineNote.querySelector('strong');
         const span = engineNote.querySelector('span');
 
-        if (mode === 'native-rvm') {
+        if (mode === 'native-rvm-hq') {
+          if (strong) strong.textContent = 'AI 배경 제거 · RVM 고품질 테스트';
+          if (span) span.textContent = '640×480 프레임에서 RVM의 전경(fgr)과 알파(pha)를 함께 받아 같은 프레임끼리 합성합니다. 내부 분석 비율은 0.60으로 고정했습니다.';
+        } else if (mode === 'native-rvm') {
           if (strong) strong.textContent = 'AI 배경 제거 · RVM Native · 개인 테스트';
           if (span) span.textContent = this.rvmInfo?.downloaded
             ? 'RVM recurrent video matting을 사용합니다. 프레임 간 상태를 이어서 움직임과 경계의 시간적 일관성을 높입니다.'
@@ -557,7 +565,11 @@ export class PersonSegmenter {
 
       nativeInfo?.classList.toggle('hidden', !nativeSelected);
       if (nativeInfo && nativeSelected) {
-        if (mode === 'native-rvm') {
+        if (mode === 'native-rvm-hq') {
+          const provider = this.rvmInfo?.provider || '선택 시 초기화';
+          const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
+          nativeInfo.textContent = `RVM HQ: ${provider} · 640×480 · ratio 0.60 · fgr+pha · ${localState}`;
+        } else if (mode === 'native-rvm') {
           const provider = this.rvmInfo?.provider || '선택 시 초기화';
           const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
           nativeInfo.textContent = `RVM: ${provider} · ${localState} · 개인 테스트용`;
@@ -573,7 +585,9 @@ export class PersonSegmenter {
       this.engineMode = '';
       refreshUi();
       this.ensureReady().then((info) => {
-        if (this.#selectedMode() === 'native-rvm' && info) this.rvmInfo = { ...this.rvmInfo, ...info, downloaded: true };
+        if (['native-rvm', 'native-rvm-hq'].includes(this.#selectedMode()) && info) {
+          this.rvmInfo = { ...this.rvmInfo, ...info, downloaded: true };
+        }
         refreshUi();
       }).catch((error) => {
         console.error('AI engine switch failed:', error);
@@ -601,10 +615,12 @@ export class PersonSegmenter {
       probeNativeRvm().then((info) => {
         this.rvmInfo = info || {};
         rvmOption.hidden = false;
+        if (rvmHqOption) rvmHqOption.hidden = false;
         refreshUi();
       }).catch((error) => {
         console.warn('Native RVM probe failed:', error);
         rvmOption.hidden = false;
+        if (rvmHqOption) rvmHqOption.hidden = false;
         refreshUi();
       });
     }
