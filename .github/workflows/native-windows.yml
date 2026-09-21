@@ -2,26 +2,6 @@ name: Build Windows Native Preview
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "src-tauri/**"
-      - "src/native-onnx-engine.js"
-      - "src/native-rvm-engine.js"
-      - "src/native-rvm-hq-engine.js"
-      - "src/rvm-webgpu-engine.js"
-      - "src/segmentation.js"
-      - "src/renderer.js"
-      - "src/index.html"
-      - "src/styles.css"
-      - "src/capture-box.html"
-      - "src/capture-box.css"
-      - "src/capture-handle.html"
-      - "src/capture-handle.css"
-      - "vite.config.js"
-      - "scripts/prepare-native-model.mjs"
-      - "package.json"
-      - ".github/workflows/native-windows.yml"
 
 permissions:
   contents: read
