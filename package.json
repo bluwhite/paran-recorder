@@ -2,7 +2,7 @@
   "name": "paran-recorder",
   "version": "0.5.0",
   "private": true,
-  "description": "Web-first lecture recorder with optional Tauri ONNX Runtime native acceleration",
+  "description": "Local-first lecture recorder with MediaPipe and native RVM background removal",
   "author": "bluwhite",
   "license": "MIT",
   "scripts": {
@@ -11,9 +11,9 @@
     "preview": "vite preview",
     "native:model": "node scripts/prepare-native-model.mjs",
     "tauri": "tauri",
-    "tauri:dev": "npm run native:model && tauri dev",
-    "tauri:exe": "npm run native:model && tauri build --no-bundle",
-    "tauri:build": "npm run native:model && tauri build"
+    "tauri:dev": "tauri dev",
+    "tauri:exe": "tauri build --no-bundle",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.1",
