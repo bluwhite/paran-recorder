@@ -125,12 +125,8 @@
         <label class="field">
           <span>AI 배경 엔진</span>
           <select id="aiEngineSelect">
-            <option value="mediapipe">MediaPipe · Web</option>
-            <option id="rvmWebGpuOption" value="rvm-webgpu-hq" hidden>RVM WebGPU 고품질 · 640×480 · fgr+pha</option>
-            <option id="rvmWasmOption" value="rvm-wasm-hq">RVM WASM 진단 · 640×480 · fgr+pha</option>
-            <option id="nativeOnnxOption" value="native-onnx" hidden>ONNX Runtime Native · PP-HumanSegV2</option>
-            <option id="nativeRvmOption" value="native-rvm" hidden>ONNX Runtime Native · RVM (개인 테스트)</option>
-            <option id="nativeRvmHqOption" value="native-rvm-hq" hidden>RVM 고품질 테스트 · 640×480 · fgr+pha</option>
+            <option value="mediapipe">MediaPipe</option>
+            <option id="nativeRvmHqOption" value="native-rvm-hq" hidden>RVM 고품질 · Native · 640×480</option>
           </select>
         </label>
 
@@ -140,40 +136,6 @@
         </div>
 
         <div id="nativeEngineInfo" class="native-engine-info hidden">Native ONNX Runtime 준비 상태 확인 중</div>
-
-        <details id="rvmAdvanced" class="advanced-settings hidden">
-          <summary>
-            <span>RVM 고급 설정</span>
-            <small id="rvmPresetLabel">품질 우선</small>
-          </summary>
-
-          <div class="advanced-body">
-            <div class="preset-row" aria-label="RVM 프리셋">
-              <button class="preset-button active" type="button" data-rvm-preset="quality">품질 우선</button>
-              <button class="preset-button" type="button" data-rvm-preset="balanced">균형</button>
-              <button class="preset-button" type="button" data-rvm-preset="speed">속도 우선</button>
-            </div>
-
-            <label class="field compact-field">
-              <span>처리 해상도</span>
-              <select id="rvmResolution">
-                <option value="256x144">256×144</option>
-                <option value="224x126">224×126</option>
-                <option value="192x108">192×108</option>
-              </select>
-              <small>낮출수록 추론량이 줄어 움직임을 더 빠르게 따라갈 수 있습니다.</small>
-            </label>
-
-            <label class="field compact-field">
-              <span class="range-title">내부 분석 비율 <b id="rvmDownsampleValue">1.00</b></span>
-              <input id="rvmDownsample" type="range" min="50" max="100" step="5" value="100">
-              <small>1.00은 경계 품질 우선, 낮출수록 속도 우선입니다. 변경 시 RVM 상태를 자동 초기화합니다.</small>
-            </label>
-
-            <div id="rvmPerformance" class="native-engine-info rvm-performance">현재 성능 · 대기 중</div>
-            <button id="rvmResetButton" class="button subtle full" type="button">RVM 상태 초기화</button>
-          </div>
-        </details>
 
         <details id="mediaPipeAdvanced" class="advanced-settings">
           <summary>
