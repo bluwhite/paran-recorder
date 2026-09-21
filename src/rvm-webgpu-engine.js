@@ -19,6 +19,10 @@ export function isRvmWebGpuAvailable() {
   );
 }
 
+export function isRvmWasmAvailable() {
+  return typeof WebAssembly !== 'undefined';
+}
+
 async function loadModelBytes(onStatus) {
   if (!sharedModelBytesPromise) {
     sharedModelBytesPromise = (async () => {
@@ -115,8 +119,10 @@ async function rgbaFromOutputs(fgr, pha) {
   };
 }
 
-export class RvmWebGpuSegmenter {
-  constructor(onStatus = () => {}) {
+class RvmWebSegmenterBase {
+  constructor(provider, onStatus = () => {}) {
+    this.provider = provider;
+    this.providerLabel = provider === 'webgpu' ? 'WebGPU' : 'WASM';
     this.onStatus = onStatus;
     this.session = null;
     this.initializing = null;
@@ -143,7 +149,7 @@ export class RvmWebGpuSegmenter {
   async ensureReady() {
     if (this.ready) {
       this.#startLoop();
-      return { available: true, provider: 'WebGPU', width: WIDTH, height: HEIGHT };
+      return { available: true, provider: this.providerLabel, width: WIDTH, height: HEIGHT };
     }
     if (this.initializing) return this.initializing;
 
@@ -155,16 +161,25 @@ export class RvmWebGpuSegmenter {
   }
 
   async #initialize() {
-    if (!isRvmWebGpuAvailable()) {
+    if (this.provider === 'webgpu' && !isRvmWebGpuAvailable()) {
       throw new Error('이 브라우저에서는 WebGPU를 사용할 수 없습니다. 최신 Chrome/Edge에서 HTTPS로 실행하세요.');
     }
+    if (this.provider === 'wasm' && !isRvmWasmAvailable()) {
+      throw new Error('이 브라우저에서는 WebAssembly를 사용할 수 없습니다.');
+    }
 
-    ort.env.webgpu.powerPreference = 'high-performance';
+    if (this.provider === 'webgpu') {
+      ort.env.webgpu.powerPreference = 'high-performance';
+    } else {
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.proxy = false;
+    }
+
     const modelBytes = await loadModelBytes(this.onStatus);
 
-    this.onStatus('RVM WebGPU 세션 준비 중');
+    this.onStatus(`RVM ${this.providerLabel} 세션 준비 중`);
     this.session = await ort.InferenceSession.create(modelBytes, {
-      executionProviders: ['webgpu'],
+      executionProviders: [this.provider],
       graphOptimizationLevel: 'all',
     });
 
@@ -187,8 +202,8 @@ export class RvmWebGpuSegmenter {
 
     this.ready = true;
     this.#startLoop();
-    this.onStatus('AI 준비 · RVM WebGPU · 640×480 · ratio 0.60');
-    return { available: true, provider: 'WebGPU', width: WIDTH, height: HEIGHT };
+    this.onStatus(`AI 준비 · RVM ${this.providerLabel} · 640×480 · ratio 0.60`);
+    return { available: true, provider: this.providerLabel, width: WIDTH, height: HEIGHT };
   }
 
   #startLoop() {
@@ -260,14 +275,14 @@ export class RvmWebGpuSegmenter {
         const elapsed = this.lastStatusAt > 0 ? (now - this.lastStatusAt) / 1000 : 1;
         const fps = Math.max(1, Math.round(this.framesSinceStatus / elapsed));
         this.onStatus(
-          `AI 준비 · RVM WebGPU · ${Math.round(this.lastInferenceMs)}ms / ${fps}fps · α평균 ${alphaMean.toFixed(2)} · 최대 ${alphaMax.toFixed(2)}`,
+          `AI 준비 · RVM ${this.providerLabel} · ${Math.round(this.lastInferenceMs)}ms / ${fps}fps · α평균 ${alphaMean.toFixed(2)} · 최대 ${alphaMax.toFixed(2)}`,
         );
         this.lastStatusAt = now;
         this.framesSinceStatus = 0;
       }
     } catch (error) {
-      console.error('RVM WebGPU inference failed:', error);
-      this.onStatus(`RVM WebGPU 오류 · ${error.message || String(error)}`);
+      console.error(`RVM ${this.providerLabel} inference failed:`, error);
+      this.onStatus(`RVM ${this.providerLabel} 오류 · ${error.message || String(error)}`);
       await new Promise((resolve) => setTimeout(resolve, 250));
     } finally {
       safeDispose(src);
@@ -298,5 +313,18 @@ export class RvmWebGpuSegmenter {
     this.framesSinceStatus = 0;
     this.lastInferenceMs = 0;
     this.onStatus('AI 대기');
+  }
+}
+
+
+export class RvmWebGpuSegmenter extends RvmWebSegmenterBase {
+  constructor(onStatus = () => {}) {
+    super('webgpu', onStatus);
+  }
+}
+
+export class RvmWasmSegmenter extends RvmWebSegmenterBase {
+  constructor(onStatus = () => {}) {
+    super('wasm', onStatus);
   }
 }
