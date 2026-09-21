@@ -81,6 +81,7 @@ let backgroundImageUrl = null;
 let latestMask = null;
 let maskImageVersion = 0;
 let renderedMaskVersion = -1;
+let renderedForegroundFrameId = -1;
 let segmentBusy = false;
 let lastSegmentAt = 0;
 let segmentErrorShown = false;
@@ -354,13 +355,19 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function currentCameraHeightRatio() {
+  if (cameraShape.value === 'circle') return 1;
+  if (latestMask?.foregroundRgba && latestMask.width && latestMask.height) {
+    return latestMask.height / latestMask.width;
+  }
+  return cameraVideo.videoWidth && cameraVideo.videoHeight
+    ? cameraVideo.videoHeight / cameraVideo.videoWidth
+    : 9 / 16;
+}
+
 function cameraRect() {
   const width = canvas.width * (Number(cameraSize.value) / 100);
-  const ratio = cameraShape.value === 'circle'
-    ? 1
-    : (cameraVideo.videoWidth && cameraVideo.videoHeight
-      ? cameraVideo.videoHeight / cameraVideo.videoWidth
-      : 9 / 16);
+  const ratio = currentCameraHeightRatio();
   const height = width * ratio;
   const centerX = presenterPosition.x * canvas.width;
   const centerY = presenterPosition.y * canvas.height;
@@ -427,11 +434,7 @@ function setPresenterPosition(x, y, save = true) {
 
 function applyPositionPreset(position, save = true) {
   const width = canvas.width * (Number(cameraSize.value) / 100);
-  const ratio = cameraShape.value === 'circle'
-    ? 1
-    : (cameraVideo.videoWidth && cameraVideo.videoHeight
-      ? cameraVideo.videoHeight / cameraVideo.videoWidth
-      : 9 / 16);
+  const ratio = currentCameraHeightRatio();
   const height = width * ratio;
   const margin = 28;
   const leftX = (margin + width / 2) / canvas.width;
@@ -502,9 +505,10 @@ function pointInsideRect(point, rect) {
 }
 
 function resizeCameraWorkCanvases() {
-  const sourceWidth = cameraVideo.videoWidth || 640;
-  const sourceHeight = cameraVideo.videoHeight || 360;
-  const scale = Math.min(1, 960 / sourceWidth);
+  const hqForeground = latestMask?.foregroundRgba;
+  const sourceWidth = hqForeground ? latestMask.width : (cameraVideo.videoWidth || 640);
+  const sourceHeight = hqForeground ? latestMask.height : (cameraVideo.videoHeight || 360);
+  const scale = hqForeground ? 1 : Math.min(1, 960 / sourceWidth);
   const width = Math.max(2, Math.round(sourceWidth * scale));
   const height = Math.max(2, Math.round(sourceHeight * scale));
 
@@ -512,6 +516,7 @@ function resizeCameraWorkCanvases() {
     if (workCanvas.width !== width || workCanvas.height !== height) {
       workCanvas.width = width;
       workCanvas.height = height;
+      if (workCanvas === foregroundCanvas) renderedForegroundFrameId = -1;
     }
   }
 }
@@ -612,6 +617,21 @@ function buildCameraComposite() {
 
   if (mode === 'original' || !latestMask) {
     drawCover(cameraCompositeCtx, cameraVideo, 0, 0, width, height);
+    return cameraCompositeCanvas;
+  }
+
+  if (latestMask.foregroundRgba) {
+    drawVirtualCameraBackground(cameraCompositeCtx, width, height);
+    if (renderedForegroundFrameId !== latestMask.frameId) {
+      const rgba = latestMask.foregroundRgba;
+      const pixels = rgba instanceof Uint8ClampedArray
+        ? rgba
+        : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+      foregroundCtx.clearRect(0, 0, width, height);
+      foregroundCtx.putImageData(new ImageData(pixels, latestMask.width, latestMask.height), 0, 0);
+      renderedForegroundFrameId = latestMask.frameId;
+    }
+    cameraCompositeCtx.drawImage(foregroundCanvas, 0, 0, width, height);
     return cameraCompositeCanvas;
   }
 
@@ -786,6 +806,7 @@ async function stopPreview() {
   screenVideo.srcObject = null;
   cameraVideo.srcObject = null;
   latestMask = null;
+  renderedForegroundFrameId = -1;
 
   resetMicMeter();
   if (audioContext) {
