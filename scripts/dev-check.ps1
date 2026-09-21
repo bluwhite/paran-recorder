@@ -24,7 +24,7 @@ if (Has-Command 'node') {
     Ok ("Node.js " + (node --version))
 } else {
     Fail "Node.js is not installed."
-    Write-Host "  Install: https://nodejs.org/"
+    Write-Host "  Run INSTALL_DEV_TOOLS.bat from the project folder."
     $failed = $true
 }
 
@@ -39,7 +39,7 @@ if (Has-Command 'rustc') {
     Ok (rustc --version)
 } else {
     Fail "Rust is not installed."
-    Write-Host "  Install: https://rustup.rs/"
+    Write-Host "  Run INSTALL_DEV_TOOLS.bat from the project folder."
     $failed = $true
 }
 
@@ -63,7 +63,7 @@ if (Test-Path $vswhere) {
     }
 } else {
     Warn "Visual Studio C++ Build Tools could not be detected."
-    Write-Host "  If Tauri compilation fails, install 'Desktop development with C++'."
+    Write-Host "  Run INSTALL_DEV_TOOLS.bat to install the C++ workload automatically."
 }
 
 if ($failed) {
