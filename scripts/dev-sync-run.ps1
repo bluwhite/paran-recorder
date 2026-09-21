@@ -52,7 +52,7 @@ Ok "최신 소스 동기화 완료"
 
 Write-Host ""
 Write-Host "[2/3] npm 패키지 확인..."
-& npm install --no-audit --no-fund
+& npm install --no-audit --no-fund --no-package-lock
 if ($LASTEXITCODE -ne 0) { throw "npm install 실패" }
 Ok "npm 패키지 확인 완료"
 
