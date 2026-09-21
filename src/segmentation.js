@@ -1,18 +1,6 @@
 import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision';
-import { NativeOnnxSegmenter, isNativeOnnxAvailable, probeNativeOnnx } from './native-onnx-engine.js';
-import {
-  NativeRvmSegmenter,
-  bindRvmSettingsUi,
-  isNativeRvmAvailable,
-  probeNativeRvm,
-} from './native-rvm-engine.js';
 import { NativeRvmHqSegmenter } from './native-rvm-hq-engine.js';
-import {
-  RvmWebGpuSegmenter,
-  RvmWasmSegmenter,
-  isRvmWebGpuAvailable,
-  isRvmWasmAvailable,
-} from './rvm-webgpu-engine.js';
+import { isNativeRvmAvailable, probeNativeRvm } from './native-rvm-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -499,20 +487,14 @@ export class PersonSegmenter {
     this.onStatus = onStatus;
     this.engine = null;
     this.engineMode = '';
-    this.ppInfo = null;
     this.rvmInfo = null;
     bindSettingsUi();
-    bindRvmSettingsUi();
     this.#wireEngineUi();
   }
 
   #selectedMode() {
     const value = document.getElementById('aiEngineSelect')?.value;
-    if (value === 'rvm-webgpu-hq' && isRvmWebGpuAvailable()) return 'rvm-webgpu-hq';
-    if (value === 'rvm-wasm-hq' && isRvmWasmAvailable()) return 'rvm-wasm-hq';
     if (value === 'native-rvm-hq' && isNativeRvmAvailable()) return 'native-rvm-hq';
-    if (value === 'native-rvm' && isNativeRvmAvailable()) return 'native-rvm';
-    if (value === 'native-onnx' && isNativeOnnxAvailable()) return 'native-onnx';
     return 'mediapipe';
   }
 
@@ -522,102 +504,58 @@ export class PersonSegmenter {
 
     this.engine?.close?.();
     this.engineMode = selectedMode;
-    if (selectedMode === 'rvm-webgpu-hq') {
-      this.engine = new RvmWebGpuSegmenter(this.onStatus);
-    } else if (selectedMode === 'rvm-wasm-hq') {
-      this.engine = new RvmWasmSegmenter(this.onStatus);
-    } else if (selectedMode === 'native-rvm-hq') {
-      this.engine = new NativeRvmHqSegmenter(this.onStatus);
-    } else if (selectedMode === 'native-rvm') {
-      this.engine = new NativeRvmSegmenter(this.onStatus);
-    } else if (selectedMode === 'native-onnx') {
-      this.engine = new NativeOnnxSegmenter(this.onStatus);
-    } else {
-      this.engine = new MediaPipePersonSegmenter(this.onStatus);
-    }
+    this.engine = selectedMode === 'native-rvm-hq'
+      ? new NativeRvmHqSegmenter(this.onStatus)
+      : new MediaPipePersonSegmenter(this.onStatus);
     return this.engine;
   }
 
   #wireEngineUi() {
     const select = document.getElementById('aiEngineSelect');
-    const webGpuOption = document.getElementById('rvmWebGpuOption');
-    const wasmOption = document.getElementById('rvmWasmOption');
-    const nativeOption = document.getElementById('nativeOnnxOption');
-    const rvmOption = document.getElementById('nativeRvmOption');
     const rvmHqOption = document.getElementById('nativeRvmHqOption');
-    const advanced = document.getElementById('mediaPipeAdvanced');
-    const rvmAdvanced = document.getElementById('rvmAdvanced');
+    const mediaPipeAdvanced = document.getElementById('mediaPipeAdvanced');
     const engineNote = document.getElementById('aiEngineNote');
     const nativeInfo = document.getElementById('nativeEngineInfo');
 
     const refreshUi = () => {
       const mode = this.#selectedMode();
-      const nativeSelected = mode !== 'mediapipe';
-      advanced?.classList.toggle('hidden', nativeSelected);
-      rvmAdvanced?.classList.toggle('hidden', mode !== 'native-rvm');
+      const nativeSelected = mode === 'native-rvm-hq';
+
+      mediaPipeAdvanced?.classList.toggle('hidden', nativeSelected);
+      nativeInfo?.classList.toggle('hidden', !nativeSelected);
 
       if (engineNote) {
         const strong = engineNote.querySelector('strong');
         const span = engineNote.querySelector('span');
 
-        if (mode === 'rvm-webgpu-hq') {
-          if (strong) strong.textContent = 'AI 배경 제거 · RVM WebGPU 고품질';
-          if (span) span.textContent = '브라우저에서 640×480 RVM을 WebGPU로 실행하고 전경(fgr)과 알파(pha)를 같은 프레임에서 합성합니다. ratio 0.60 고정 테스트입니다.';
-        } else if (mode === 'rvm-wasm-hq') {
-          if (strong) strong.textContent = 'AI 배경 제거 · RVM WASM 진단';
-          if (span) span.textContent = 'WebGPU와 동일한 640×480 / ratio 0.60 / fgr+pha 조건을 CPU(WASM)에서 실행합니다. 정확도 비교용이라 속도는 느릴 수 있습니다.';
-        } else if (mode === 'native-rvm-hq') {
-          if (strong) strong.textContent = 'AI 배경 제거 · RVM 고품질 테스트';
-          if (span) span.textContent = '640×480 프레임에서 RVM의 전경(fgr)과 알파(pha)를 함께 받아 같은 프레임끼리 합성합니다. 내부 분석 비율은 0.60으로 고정했습니다.';
-        } else if (mode === 'native-rvm') {
-          if (strong) strong.textContent = 'AI 배경 제거 · RVM Native · 개인 테스트';
-          if (span) span.textContent = this.rvmInfo?.downloaded
-            ? 'RVM recurrent video matting을 사용합니다. 프레임 간 상태를 이어서 움직임과 경계의 시간적 일관성을 높입니다.'
-            : '처음 선택하면 공식 RVM GPL-3.0 ONNX 모델 약 15MB를 이 PC에만 내려받습니다.';
-        } else if (mode === 'native-onnx') {
-          if (strong) strong.textContent = 'AI 배경 제거 · PP-HumanSegV2 Native';
-          if (span) span.textContent = 'Windows 네이티브 ONNX Runtime이 저해상도 카메라 프레임을 GPU에서 처리합니다.';
+        if (nativeSelected) {
+          if (strong) strong.textContent = 'AI 배경 제거 · RVM 고품질 Native';
+          if (span) span.textContent = '640×480 입력에서 RVM의 전경(fgr)과 알파(pha)를 같은 프레임으로 합성합니다. 현재 PC 최종 엔진입니다.';
         } else {
           if (strong) strong.textContent = 'AI 배경 제거 · MediaPipe';
-          if (span) span.textContent = '빠른 실시간 처리를 사용합니다. 환경에 따라 아래 고급 설정을 조절할 수 있습니다.';
+          if (span) span.textContent = '웹과 PC에서 사용할 수 있는 빠른 실시간 배경 제거 엔진입니다.';
         }
       }
 
-      nativeInfo?.classList.toggle('hidden', !nativeSelected);
       if (nativeInfo && nativeSelected) {
-        if (mode === 'rvm-webgpu-hq') {
-          nativeInfo.textContent = 'WebGPU · 640×480 · ratio 0.60 · fgr+pha · 브라우저 로컬 추론';
-        } else if (mode === 'rvm-wasm-hq') {
-          nativeInfo.textContent = 'WASM CPU 진단 · 640×480 · ratio 0.60 · fgr+pha · WebGPU 결과 비교용';
-        } else if (mode === 'native-rvm-hq') {
-          const provider = this.rvmInfo?.provider || '선택 시 초기화';
-          const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
-          nativeInfo.textContent = `RVM HQ: ${provider} · 640×480 · ratio 0.60 · fgr+pha · ${localState}`;
-        } else if (mode === 'native-rvm') {
-          const provider = this.rvmInfo?.provider || '선택 시 초기화';
-          const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
-          nativeInfo.textContent = `RVM: ${provider} · ${localState} · 개인 테스트용`;
-        } else {
-          nativeInfo.textContent = `Native: ${this.ppInfo?.provider || 'ONNX Runtime'} · ${this.ppInfo?.model || 'PP-HumanSegV2-Lite'}`;
-        }
+        const provider = this.rvmInfo?.provider || '선택 시 초기화';
+        const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
+        nativeInfo.textContent = `RVM Native: ${provider} · 640×480 · ratio 0.60 · fgr+pha · ${localState}`;
       }
     };
 
     select?.addEventListener('change', () => {
-      if (select.value === 'rvm-webgpu-hq' && !isRvmWebGpuAvailable()) {
+      if (select.value === 'native-rvm-hq' && !isNativeRvmAvailable()) {
         select.value = 'mediapipe';
-        this.onStatus('WebGPU 미지원 · MediaPipe 사용');
       }
-      if (select.value === 'rvm-wasm-hq' && !isRvmWasmAvailable()) {
-        select.value = 'mediapipe';
-        this.onStatus('WASM 미지원 · MediaPipe 사용');
-      }
+
       this.engine?.close?.();
       this.engine = null;
       this.engineMode = '';
       refreshUi();
+
       this.ensureReady().then((info) => {
-        if (['native-rvm', 'native-rvm-hq'].includes(this.#selectedMode()) && info) {
+        if (this.#selectedMode() === 'native-rvm-hq' && info) {
           this.rvmInfo = { ...this.rvmInfo, ...info, downloaded: true };
         }
         refreshUi();
@@ -627,39 +565,17 @@ export class PersonSegmenter {
       });
     });
 
-    if (webGpuOption) {
-      webGpuOption.hidden = !isRvmWebGpuAvailable();
-    }
-    if (wasmOption) {
-      wasmOption.hidden = !isRvmWasmAvailable();
-    }
-
     refreshUi();
 
-    if (isNativeOnnxAvailable() && nativeOption) {
-      probeNativeOnnx().then((info) => {
-        if (!info?.available) return;
-        this.ppInfo = info;
-        nativeOption.hidden = false;
-        refreshUi();
-      }).catch((error) => {
-        console.warn('Native PP-HumanSeg runtime unavailable:', error);
-        nativeOption.hidden = true;
-        if (select?.value === 'native-onnx') select.value = 'mediapipe';
-        refreshUi();
-      });
-    }
-
-    if (isNativeRvmAvailable() && rvmOption) {
+    if (isNativeRvmAvailable() && rvmHqOption) {
       probeNativeRvm().then((info) => {
         this.rvmInfo = info || {};
-        rvmOption.hidden = false;
-        if (rvmHqOption) rvmHqOption.hidden = false;
+        rvmHqOption.hidden = false;
         refreshUi();
       }).catch((error) => {
         console.warn('Native RVM probe failed:', error);
-        rvmOption.hidden = false;
-        if (rvmHqOption) rvmHqOption.hidden = false;
+        rvmHqOption.hidden = true;
+        if (select?.value === 'native-rvm-hq') select.value = 'mediapipe';
         refreshUi();
       });
     }
