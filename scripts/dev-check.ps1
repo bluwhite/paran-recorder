@@ -20,14 +20,6 @@ Write-Host ""
 
 $failed = $false
 
-if (Has-Command 'git') {
-    Ok ("Git " + ((git --version) -replace '^git version\s*',''))
-} else {
-    Fail "Git is not installed."
-    Write-Host "  Install: https://git-scm.com/download/win"
-    $failed = $true
-}
-
 if (Has-Command 'node') {
     Ok ("Node.js " + (node --version))
 } else {
