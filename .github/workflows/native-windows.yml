@@ -8,6 +8,7 @@ on:
       - "src-tauri/**"
       - "src/native-onnx-engine.js"
       - "src/native-rvm-engine.js"
+      - "src/native-rvm-hq-engine.js"
       - "src/segmentation.js"
       - "src/renderer.js"
       - "src/index.html"
