@@ -8,3 +8,4 @@ src-tauri/resources/*.dll
 native-test/
 .DS_Store
 *.log
+.dev-setup-ok
