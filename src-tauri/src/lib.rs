@@ -946,12 +946,23 @@ fn native_rvm_segment(
         let width = request_dimension(&request, "x-width")?;
         let height = request_dimension(&request, "x-height")?;
 
-        let supported_resolution = matches!(
-            (width, height),
-            (256, 144) | (224, 126) | (192, 108)
-        );
+        let output_mode = request
+            .headers()
+            .get("x-output")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("alpha8");
+        let foreground_rgba = output_mode == "foreground-rgba";
+
+        let supported_resolution = if foreground_rgba {
+            (width, height) == (640, 480)
+        } else {
+            matches!((width, height), (256, 144) | (224, 126) | (192, 108))
+        };
         if !supported_resolution {
-            return Err(format!("지원하지 않는 RVM 입력 해상도입니다: {}x{}", width, height));
+            return Err(format!(
+                "지원하지 않는 RVM 입력 해상도/출력 모드입니다: {}x{} / {}",
+                width, height, output_mode
+            ));
         }
 
         let downsample_ratio = request_float(&request, "x-downsample-ratio")?;
@@ -1040,6 +1051,33 @@ fn native_rvm_segment(
             ));
         }
 
+        let response_bytes = if foreground_rgba {
+            let (_fgr_shape, fgr_values) = outputs["fgr"]
+                .try_extract_tensor::<f32>()
+                .map_err(|error| format!("RVM foreground 출력 읽기 실패: {error}"))?;
+            if fgr_values.len() != plane * 3 {
+                return Err(format!(
+                    "RVM foreground 크기가 예상과 다릅니다: {} / {}",
+                    fgr_values.len(),
+                    plane * 3
+                ));
+            }
+
+            let mut rgba = Vec::with_capacity(plane * 4);
+            for i in 0..plane {
+                rgba.push((fgr_values[i].clamp(0.0, 1.0) * 255.0).round() as u8);
+                rgba.push((fgr_values[plane + i].clamp(0.0, 1.0) * 255.0).round() as u8);
+                rgba.push((fgr_values[(plane * 2) + i].clamp(0.0, 1.0) * 255.0).round() as u8);
+                rgba.push((pha_values[i].clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+            rgba
+        } else {
+            pha_values
+                .iter()
+                .map(|&value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+                .collect()
+        };
+
         let next_rec = vec![
             recurrent_from_output(&outputs, "r1o")?,
             recurrent_from_output(&outputs, "r2o")?,
@@ -1047,15 +1085,10 @@ fn native_rvm_segment(
             recurrent_from_output(&outputs, "r4o")?,
         ];
 
-        let alpha: Vec<u8> = pha_values
-            .iter()
-            .map(|&value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect();
-
         drop(outputs);
         engine.rec = next_rec;
 
-        return Ok(tauri::ipc::Response::new(alpha));
+        return Ok(tauri::ipc::Response::new(response_bytes));
     }
 
     #[cfg(not(target_os = "windows"))]
