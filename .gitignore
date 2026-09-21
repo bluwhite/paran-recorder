@@ -9,3 +9,4 @@ native-test/
 .DS_Store
 *.log
 .dev-setup-ok
+package-lock.json
