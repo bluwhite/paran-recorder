@@ -7,7 +7,12 @@ import {
   probeNativeRvm,
 } from './native-rvm-engine.js';
 import { NativeRvmHqSegmenter } from './native-rvm-hq-engine.js';
-import { RvmWebGpuSegmenter, isRvmWebGpuAvailable } from './rvm-webgpu-engine.js';
+import {
+  RvmWebGpuSegmenter,
+  RvmWasmSegmenter,
+  isRvmWebGpuAvailable,
+  isRvmWasmAvailable,
+} from './rvm-webgpu-engine.js';
 
 const WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
@@ -504,6 +509,7 @@ export class PersonSegmenter {
   #selectedMode() {
     const value = document.getElementById('aiEngineSelect')?.value;
     if (value === 'rvm-webgpu-hq' && isRvmWebGpuAvailable()) return 'rvm-webgpu-hq';
+    if (value === 'rvm-wasm-hq' && isRvmWasmAvailable()) return 'rvm-wasm-hq';
     if (value === 'native-rvm-hq' && isNativeRvmAvailable()) return 'native-rvm-hq';
     if (value === 'native-rvm' && isNativeRvmAvailable()) return 'native-rvm';
     if (value === 'native-onnx' && isNativeOnnxAvailable()) return 'native-onnx';
@@ -518,6 +524,8 @@ export class PersonSegmenter {
     this.engineMode = selectedMode;
     if (selectedMode === 'rvm-webgpu-hq') {
       this.engine = new RvmWebGpuSegmenter(this.onStatus);
+    } else if (selectedMode === 'rvm-wasm-hq') {
+      this.engine = new RvmWasmSegmenter(this.onStatus);
     } else if (selectedMode === 'native-rvm-hq') {
       this.engine = new NativeRvmHqSegmenter(this.onStatus);
     } else if (selectedMode === 'native-rvm') {
@@ -533,6 +541,7 @@ export class PersonSegmenter {
   #wireEngineUi() {
     const select = document.getElementById('aiEngineSelect');
     const webGpuOption = document.getElementById('rvmWebGpuOption');
+    const wasmOption = document.getElementById('rvmWasmOption');
     const nativeOption = document.getElementById('nativeOnnxOption');
     const rvmOption = document.getElementById('nativeRvmOption');
     const rvmHqOption = document.getElementById('nativeRvmHqOption');
@@ -554,6 +563,9 @@ export class PersonSegmenter {
         if (mode === 'rvm-webgpu-hq') {
           if (strong) strong.textContent = 'AI 배경 제거 · RVM WebGPU 고품질';
           if (span) span.textContent = '브라우저에서 640×480 RVM을 WebGPU로 실행하고 전경(fgr)과 알파(pha)를 같은 프레임에서 합성합니다. ratio 0.60 고정 테스트입니다.';
+        } else if (mode === 'rvm-wasm-hq') {
+          if (strong) strong.textContent = 'AI 배경 제거 · RVM WASM 진단';
+          if (span) span.textContent = 'WebGPU와 동일한 640×480 / ratio 0.60 / fgr+pha 조건을 CPU(WASM)에서 실행합니다. 정확도 비교용이라 속도는 느릴 수 있습니다.';
         } else if (mode === 'native-rvm-hq') {
           if (strong) strong.textContent = 'AI 배경 제거 · RVM 고품질 테스트';
           if (span) span.textContent = '640×480 프레임에서 RVM의 전경(fgr)과 알파(pha)를 함께 받아 같은 프레임끼리 합성합니다. 내부 분석 비율은 0.60으로 고정했습니다.';
@@ -575,6 +587,8 @@ export class PersonSegmenter {
       if (nativeInfo && nativeSelected) {
         if (mode === 'rvm-webgpu-hq') {
           nativeInfo.textContent = 'WebGPU · 640×480 · ratio 0.60 · fgr+pha · 브라우저 로컬 추론';
+        } else if (mode === 'rvm-wasm-hq') {
+          nativeInfo.textContent = 'WASM CPU 진단 · 640×480 · ratio 0.60 · fgr+pha · WebGPU 결과 비교용';
         } else if (mode === 'native-rvm-hq') {
           const provider = this.rvmInfo?.provider || '선택 시 초기화';
           const localState = this.rvmInfo?.downloaded ? '모델 저장됨' : '첫 선택 시 모델 다운로드';
@@ -594,6 +608,10 @@ export class PersonSegmenter {
         select.value = 'mediapipe';
         this.onStatus('WebGPU 미지원 · MediaPipe 사용');
       }
+      if (select.value === 'rvm-wasm-hq' && !isRvmWasmAvailable()) {
+        select.value = 'mediapipe';
+        this.onStatus('WASM 미지원 · MediaPipe 사용');
+      }
       this.engine?.close?.();
       this.engine = null;
       this.engineMode = '';
@@ -611,6 +629,9 @@ export class PersonSegmenter {
 
     if (webGpuOption) {
       webGpuOption.hidden = !isRvmWebGpuAvailable();
+    }
+    if (wasmOption) {
+      wasmOption.hidden = !isRvmWasmAvailable();
     }
 
     refreshUi();
