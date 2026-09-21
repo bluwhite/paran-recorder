@@ -100,6 +100,8 @@ Write-Host "[3/3] Rust 의존성 미리 받기..."
 if ($LASTEXITCODE -ne 0) { throw "cargo fetch 실패" }
 Ok "Rust 의존성 준비 완료"
 
+Set-Content -Path (Join-Path $Root '.dev-setup-ok') -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Encoding ASCII
+
 Write-Host ""
 Write-Host "==============================================="
 Write-Host " 개발환경 준비 완료"
