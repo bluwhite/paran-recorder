@@ -84,7 +84,7 @@ if ($failed) {
 
 Write-Host ""
 Write-Host "[1/3] npm 패키지 확인..."
-& npm install --no-audit --no-fund
+& npm install --no-audit --no-fund --no-package-lock
 if ($LASTEXITCODE -ne 0) { throw "npm install 실패" }
 Ok "npm 패키지 준비 완료"
 
