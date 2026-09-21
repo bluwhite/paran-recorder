@@ -1,15 +1,19 @@
-name: Build Windows Native Preview
+name: Build Windows Portable Test
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/build-native-trigger"
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 concurrency:
-  group: native-preview-${{ github.sha }}
-  cancel-in-progress: false
+  group: native-portable-test
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -25,27 +29,21 @@ jobs:
           node-version: 24
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm install --no-audit --no-fund
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Reuse converted PP-HumanSegV2 ONNX
-        uses: actions/download-artifact@v4
-        with:
-          name: PP-HumanSegV2-Lite-ONNX
-          path: src-tauri/resources/models
-          repository: bluwhite/paran-recorder
-          run-id: 35310532539
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build portable native app
+        run: npm run tauri:exe
 
-      - name: Verify native model
-        run: npm run native:model
-
-      - name: Warm native build and collect ONNX Runtime DLLs
+      - name: Collect ONNX Runtime DLLs and package ZIP
         shell: pwsh
         run: |
-          cargo build --manifest-path src-tauri/Cargo.toml --release
+          $stage = "native-test/ParanRecorder"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item "src-tauri/target/release/paran-recorder.exe" "$stage/ParanRecorder.exe" -Force
 
           $dlls = Get-ChildItem -Path "src-tauri/target/release" -Recurse -Filter "*.dll" |
             Where-Object { $_.Name -match "onnx|DirectML|dml" } |
@@ -53,57 +51,53 @@ jobs:
 
           foreach ($dll in $dlls) {
             Write-Host "Bundling native DLL: $($dll.FullName)"
-            Copy-Item $dll.FullName "src-tauri/resources/$($dll.Name)" -Force
-          }
-
-          Write-Host "Native resource directory:"
-          Get-ChildItem "src-tauri/resources" -Recurse
-
-      - name: Build NSIS native host
-        run: npm run tauri:build -- --bundles nsis
-
-      - name: Create install-free native test ZIP
-        shell: pwsh
-        run: |
-          $stage = "native-test/ParanRecorder"
-          New-Item -ItemType Directory -Force -Path "$stage/models" | Out-Null
-
-          Copy-Item "src-tauri/target/release/paran-recorder.exe" "$stage/ParanRecorder.exe" -Force
-          Copy-Item "src-tauri/resources/models/pp_humanseg_v2_lite.onnx" "$stage/models/pp_humanseg_v2_lite.onnx" -Force
-
-          Get-ChildItem "src-tauri/resources" -Filter "*.dll" -File | ForEach-Object {
-            Copy-Item $_.FullName "$stage/$($_.Name)" -Force
+            Copy-Item $dll.FullName "$stage/$($dll.Name)" -Force
           }
 
           @"
-          Paran Recorder Native Test
+          Paran Recorder Portable Test
 
-          1. Keep all files in this folder together.
-          2. Run ParanRecorder.exe.
-          3. Available background-removal engines:
-             - MediaPipe
-             - RVM Native HQ · 640x480 · fgr+pha
-          4. RVM is NOT bundled in this ZIP. The first time you select RVM Native HQ,
-             the app downloads the official GPL-3.0 rvm_mobilenetv3_fp32.onnx (~15 MB)
-             from the PeterL1n/RobustVideoMatting v1.0.0 GitHub release into local app data.
-          5. The downloaded RVM model is used for local native processing.
+          Run ParanRecorder.exe.
 
-          This test build requires Microsoft Edge WebView2 Runtime.
+          Background-removal engines:
+          - MediaPipe
+          - RVM Native HQ 640x480, fgr+pha
+
+          The RVM model is not bundled. On first use of RVM Native HQ,
+          the app downloads the official RVM ONNX model to local app data.
+
+          Microsoft Edge WebView2 Runtime is required.
+          Build commit: $env:GITHUB_SHA
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
 
-          Compress-Archive -Path "$stage/*" -DestinationPath "native-test/Paran-Recorder-Native-Test.zip" -Force
-          Get-ChildItem "native-test" -Recurse
+          New-Item -ItemType Directory -Force -Path "native-test" | Out-Null
+          Compress-Archive -Path "$stage/*" -DestinationPath "native-test/Paran-Recorder-Portable-Test.zip" -Force
 
-      - name: Upload install-free native test
+          Write-Host "Portable package contents:"
+          Get-ChildItem $stage
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Paran-Recorder-Native-Test
-          path: native-test/Paran-Recorder-Native-Test.zip
+          name: Paran-Recorder-Portable-Test
+          path: native-test/Paran-Recorder-Portable-Test.zip
           if-no-files-found: error
 
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: Paran-Recorder-Native-Installer
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
+      - name: Publish fixed dev-latest release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = "native-test/Paran-Recorder-Portable-Test.zip"
+          $repo = $env:GITHUB_REPOSITORY
+          $sha = $env:GITHUB_SHA
+
+          & gh release view dev-latest --repo $repo *> $null
+          $exists = $LASTEXITCODE -eq 0
+
+          if (-not $exists) {
+            gh release create dev-latest $asset --repo $repo --target $sha --title "Paran Recorder Dev Latest" --notes "Latest Windows portable test build. Commit: $sha" --prerelease
+          } else {
+            gh release upload dev-latest $asset --repo $repo --clobber
+            gh release edit dev-latest --repo $repo --title "Paran Recorder Dev Latest" --notes "Latest Windows portable test build. Commit: $sha" --prerelease
+          }
