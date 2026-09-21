@@ -80,14 +80,13 @@ jobs:
 
           1. Keep all files in this folder together.
           2. Run ParanRecorder.exe.
-          3. Available engines:
-             - MediaPipe · Web
-             - ONNX Runtime Native · PP-HumanSegV2
-             - ONNX Runtime Native · RVM (personal local test)
-          4. RVM is NOT bundled in this ZIP. The first time you select RVM, the app downloads
-             the official GPL-3.0 rvm_mobilenetv3_fp32.onnx (~15 MB) directly from the
-             PeterL1n/RobustVideoMatting v1.0.0 GitHub release into local app data.
-          5. The downloaded RVM model is intended here for personal local testing.
+          3. Available background-removal engines:
+             - MediaPipe
+             - RVM Native HQ · 640x480 · fgr+pha
+          4. RVM is NOT bundled in this ZIP. The first time you select RVM Native HQ,
+             the app downloads the official GPL-3.0 rvm_mobilenetv3_fp32.onnx (~15 MB)
+             from the PeterL1n/RobustVideoMatting v1.0.0 GitHub release into local app data.
+          5. The downloaded RVM model is used for local native processing.
 
           This test build requires Microsoft Edge WebView2 Runtime.
           "@ | Set-Content "$stage/README.txt" -Encoding UTF8
